@@ -1,18 +1,19 @@
-# URL Analyzer
+# Company Analyzer
 
-A Node.js application that analyzes URLs by scraping their content and providing AI-generated summaries using Claude.
+A Node.js application that analyzes company websites by scraping their content and providing AI-generated summaries using Claude.
 
 ## Setup
 
+### Local Development
 1. Install dependencies:
 ```bash
 npm install
 ```
 
-2. Create a `.env` file in the root directory with the following content:
+2. Create a `.env` file in the root directory with:
 ```
 ANTHROPIC_API_KEY=your_api_key_here
-PORT=3000
+PORT=8080
 ```
 
 3. Start the server:
@@ -20,10 +21,34 @@ PORT=3000
 npm start
 ```
 
-For development with auto-reload:
+### Docker Deployment
+
+1. Build the Docker image:
 ```bash
-npm run dev
+docker build -t company-analyzer .
 ```
+
+2. Run the container:
+```bash
+docker run -p 8080:8080 -e ANTHROPIC_API_KEY=your_api_key_here company-analyzer
+```
+
+### Google Cloud Run Deployment
+
+1. Build the image:
+```bash
+docker build -t gcr.io/your-project/company-analyzer .
+```
+
+2. Push to Google Container Registry:
+```bash
+docker push gcr.io/your-project/company-analyzer
+```
+
+3. Deploy to Cloud Run:
+- Set container port to 8080
+- Add ANTHROPIC_API_KEY as an environment variable
+- Allocate at least 1GB memory for Chrome/Puppeteer
 
 ## API Usage
 
@@ -33,7 +58,9 @@ POST /api/analyze
 Content-Type: application/json
 
 {
-    "url": "https://example.com"
+    "url": "https://example.com",
+    "model": "claude-3-haiku-20240307",  // optional
+    "prompt": "Custom analysis prompt"    // optional
 }
 ```
 
@@ -41,6 +68,7 @@ Response:
 ```json
 {
     "url": "https://example.com",
+    "model": "claude-3-haiku-20240307",
     "summary": "AI-generated summary of the webpage content"
 }
 ```
