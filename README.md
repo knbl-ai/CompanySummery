@@ -79,3 +79,4 @@ The API returns appropriate error messages with corresponding HTTP status codes:
 - 400: Bad Request (missing URL)
 - 500: Internal Server Error (scraping or AI processing failed)
 # CompanySummery
+# CompanySummery
