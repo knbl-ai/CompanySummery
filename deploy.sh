@@ -16,8 +16,8 @@ IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
 
 # Prepare environment variables string
 ENV_VARS="NODE_ENV=production,\
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium,\
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY,\
+PUPPETEER_SKIP_DOWNLOAD=true"
 
 echo "🚀 Starting deployment process..."
 

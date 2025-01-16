@@ -2,15 +2,21 @@ const puppeteer = require('puppeteer');
 
 class ScrapeService {
   async scrapeUrl(url) {
-    const browser = await puppeteer.launch({
+    const options = {
       headless: "new",
-      executablePath: '/usr/bin/chromium',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage'
       ]
-    });
+    };
+    
+    // Use executable path from env if provided (for Docker)
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      options.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+    
+    const browser = await puppeteer.launch(options);
     
     try {
       const page = await browser.newPage();
@@ -30,7 +36,7 @@ class ScrapeService {
         // Get text content
         return {
           title: document.title,
-          text: document.body.innerText
+          content: document.body.innerText
         };
       });
 

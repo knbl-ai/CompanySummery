@@ -25,9 +25,6 @@ RUN npm ci
 # Copy app source
 COPY . .
 
-# Update scrapeService.js to use Puppeteer with proper Docker configuration and Chromium
-RUN sed -i 's/await puppeteer.launch()/await puppeteer.launch({\n    headless: "new",\n    executablePath: "\/usr\/bin\/chromium",\n    args: [\n      "--no-sandbox",\n      "--disable-setuid-sandbox",\n      "--disable-dev-shm-usage"\n    ]\n  })/' src/services/scrapeService.js
-
 # Expose the port the app runs on
 EXPOSE 8080
 

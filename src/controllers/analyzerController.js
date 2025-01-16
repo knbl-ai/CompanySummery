@@ -15,6 +15,8 @@ class AnalyzerController {
       // Scrape the URL
       const scrapedContent = await scrapeService.scrapeUrl(url);
 
+      console.log("scrapedContent", scrapedContent);
+
       // Get AI summary using optional model and prompt
       const summary = await aiService.summarizeContent(scrapedContent, model, prompt);
 
