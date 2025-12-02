@@ -3,9 +3,11 @@
 # Exit on any error
 set -e
 
-# Load environment variables from .env file
+# Load environment variables from .env file (properly handling multi-line values)
 if [ -f .env ]; then
-  export $(cat .env | sed 's/#.*//g' | xargs)
+  set -a
+  source .env
+  set +a
 fi
 
 # Set the project ID and other configurations
@@ -17,7 +19,22 @@ IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
 # Prepare environment variables string
 ENV_VARS="NODE_ENV=production,\
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY,\
-PUPPETEER_SKIP_DOWNLOAD=true"
+PUPPETEER_SKIP_DOWNLOAD=true,\
+GCLOUD_PROJECT_ID=$GCLOUD_PROJECT_ID,\
+GCLOUD_STORAGE_BUCKET_NAME=$GCLOUD_STORAGE_BUCKET_NAME,\
+GCLOUD_CLIENT_EMAIL=$GCLOUD_CLIENT_EMAIL,\
+GCLOUD_PRIVATE_KEY=$GCLOUD_PRIVATE_KEY,\
+GCS_PUBLIC_ACCESS=$GCS_PUBLIC_ACCESS,\
+GCS_SIGNED_URL_EXPIRY=$GCS_SIGNED_URL_EXPIRY,\
+SCREENSHOT_REQUEST_TIMEOUT=$SCREENSHOT_REQUEST_TIMEOUT,\
+SCREENSHOT_OPERATION_TIMEOUT=$SCREENSHOT_OPERATION_TIMEOUT,\
+SCREENSHOT_BROWSER_LAUNCH_TIMEOUT=$SCREENSHOT_BROWSER_LAUNCH_TIMEOUT,\
+SCREENSHOT_PAGE_NAVIGATION_TIMEOUT=$SCREENSHOT_PAGE_NAVIGATION_TIMEOUT,\
+SCREENSHOT_CAPTURE_TIMEOUT=$SCREENSHOT_CAPTURE_TIMEOUT,\
+SCREENSHOT_GCS_UPLOAD_TIMEOUT=$SCREENSHOT_GCS_UPLOAD_TIMEOUT,\
+SCREENSHOT_MAX_CONCURRENT=$SCREENSHOT_MAX_CONCURRENT,\
+SCREENSHOT_WAIT_STRATEGY=$SCREENSHOT_WAIT_STRATEGY,\
+SCREENSHOT_POST_LOAD_DELAY=$SCREENSHOT_POST_LOAD_DELAY"
 
 echo "🚀 Starting deployment process..."
 
@@ -44,9 +61,12 @@ gcloud run deploy $SERVICE_NAME \
   --platform managed \
   --region $REGION \
   --allow-unauthenticated \
-  --memory 1Gi \
+  --memory 2Gi \
+  --cpu 2 \
   --timeout 1000 \
   --port 8080 \
+  --max-instances 10 \
+  --concurrency 80 \
   --set-env-vars="$ENV_VARS"
 
 echo "✅ Deployment completed!"
