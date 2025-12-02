@@ -1,11 +1,12 @@
 # Company Analyzer
 
-A robust Node.js application that analyzes company websites and captures screenshots using AI-powered analysis with Claude and Puppeteer. Features comprehensive timeout protection, concurrency limiting, and optimized content capture.
+A robust Node.js application that analyzes company websites, captures screenshots, and extracts images using AI-powered analysis with Claude and Puppeteer. Features comprehensive timeout protection, concurrency limiting, and optimized content capture.
 
 ## Features
 
 - **AI-Powered Analysis**: Scrapes and analyzes website content using Claude AI
 - **Screenshot Capture**: Full-page screenshots with lazy-load support and optimal content capture
+- **Image Extraction**: Extract all images from web pages with metadata, dimensions, and intelligent classification
 - **Multi-Level Timeout Protection**: Prevents indefinite hangs with nested timeouts (90s → 80s → operation-level)
 - **Concurrency Limiting**: Prevents resource exhaustion with configurable concurrent request limits
 - **Google Cloud Storage Integration**: Automatic upload with public and signed URL options
@@ -173,6 +174,82 @@ Captures full-page screenshot with optimized content loading.
 - `504`: Gateway Timeout (operation exceeded timeout limit)
 - `500`: Internal Server Error
 
+### 3. Extract Images
+
+Extracts all images from a webpage with metadata and classification.
+
+**Endpoint**: `POST /api/extract-images`
+
+**Request**:
+```json
+{
+    "url": "https://example.com",
+    "options": {
+        "minWidth": 200,
+        "minHeight": 200,
+        "classifyImages": true,
+        "includeBackgrounds": false,
+        "maxImages": 100
+    }
+}
+```
+
+**Parameters**:
+- `url` (required): Website URL to extract images from
+- `options` (optional): Extraction options
+  - `minWidth` (default: 100): Minimum image width in pixels
+  - `minHeight` (default: 100): Minimum image height in pixels
+  - `classifyImages` (default: true): Classify images by type
+  - `includeBackgrounds` (default: false): Include CSS background images
+  - `maxImages` (default: 100): Maximum number of images to return
+
+**Response**:
+```json
+{
+    "success": true,
+    "url": "https://example.com",
+    "totalImages": 25,
+    "images": [
+        {
+            "src": "https://example.com/product.jpg",
+            "srcset": "https://example.com/product-2x.jpg 2x",
+            "alt": "Product image",
+            "width": 800,
+            "height": 600,
+            "format": "jpeg",
+            "position": {
+                "x": 100,
+                "y": 500,
+                "visible": true
+            },
+            "classification": "product",
+            "isLazyLoaded": true
+        }
+    ],
+    "metadata": {
+        "processingTime": 15000,
+        "totalImages": 25,
+        "filteredOut": 5,
+        "lazyLoadedCount": 20,
+        "elapsedMs": 15000
+    }
+}
+```
+
+**Image Classifications**:
+- `hero`: Large featured images at page top
+- `product`: Product/merchandise images
+- `logo`: Company/brand logos
+- `icon`: Small UI icons
+- `thumbnail`: Preview/gallery thumbnails
+- `content`: Regular content images
+
+**Status Codes**:
+- `200`: Success
+- `400`: Bad Request (missing/invalid URL or options)
+- `504`: Gateway Timeout (operation exceeded 60s timeout)
+- `500`: Internal Server Error
+
 ## Configuration Guide
 
 ### Timeout Settings
@@ -210,6 +287,15 @@ Optimize for different website types:
 |---------|---------|-------------|
 | `GCS_PUBLIC_ACCESS` | true | Make screenshots publicly accessible |
 | `GCS_SIGNED_URL_EXPIRY` | 7d | Signed URL expiration (if not public) |
+
+### Image Extraction Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `IMAGE_EXTRACTION_TIMEOUT` | 60000ms | Maximum image extraction operation time |
+| `IMAGE_MIN_WIDTH` | 100px | Minimum image width to include |
+| `IMAGE_MIN_HEIGHT` | 100px | Minimum image height to include |
+| `IMAGE_INCLUDE_BACKGROUNDS` | false | Include CSS background images |
 
 ## Deployment
 
