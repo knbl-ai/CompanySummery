@@ -23,7 +23,6 @@ PUPPETEER_SKIP_DOWNLOAD=true,\
 GCLOUD_PROJECT_ID=$GCLOUD_PROJECT_ID,\
 GCLOUD_STORAGE_BUCKET_NAME=$GCLOUD_STORAGE_BUCKET_NAME,\
 GCLOUD_CLIENT_EMAIL=$GCLOUD_CLIENT_EMAIL,\
-GCLOUD_PRIVATE_KEY=$GCLOUD_PRIVATE_KEY,\
 GCS_PUBLIC_ACCESS=$GCS_PUBLIC_ACCESS,\
 GCS_SIGNED_URL_EXPIRY=$GCS_SIGNED_URL_EXPIRY,\
 SCREENSHOT_REQUEST_TIMEOUT=$SCREENSHOT_REQUEST_TIMEOUT,\
@@ -55,7 +54,7 @@ echo "⬆️  Pushing image to GCR..."
 docker push $IMAGE_NAME
 
 # Deploy to Cloud Run
-echo "🚀 Deploying to Cloud Run..."
+echo "🚀 Deploying to Cloud Run with Secret Manager..."
 gcloud run deploy $SERVICE_NAME \
   --image $IMAGE_NAME \
   --platform managed \
@@ -67,7 +66,8 @@ gcloud run deploy $SERVICE_NAME \
   --port 8080 \
   --max-instances 10 \
   --concurrency 80 \
-  --set-env-vars="$ENV_VARS"
+  --set-env-vars="$ENV_VARS" \
+  --set-secrets="GCLOUD_PRIVATE_KEY=gcloud-private-key:latest"
 
 echo "✅ Deployment completed!"
 

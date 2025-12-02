@@ -12,6 +12,14 @@ yarn-error.log*
 .env.test
 .env.production
 
+# Sensitive deployment files
+service.yaml
+service-temp.yaml
+*.yaml.bak
+*.pem
+*private-key*
+credentials.json
+
 # Runtime data
 pids
 *.pid
