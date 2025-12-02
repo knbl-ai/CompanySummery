@@ -23,6 +23,10 @@ class AnalyzerController {
       res.json({
         url: url,
         model: model || "claude-3-haiku-20240307", // Show which model was used
+        title: scrapedContent.title,
+        description: scrapedContent.description || scrapedContent.ogDescription || scrapedContent.twitterDescription, // Fallback chain for description
+        favicon: scrapedContent.favicon,
+        mainImage: scrapedContent.mainImage || scrapedContent.ogImage || scrapedContent.twitterImage, // Fallback chain for main image
         summary: summary
       });
     } catch (error) {

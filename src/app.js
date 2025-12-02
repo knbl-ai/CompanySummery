@@ -1,11 +1,15 @@
 require('dotenv').config();
 const express = require('express');
 const routes = require('./routes/api');
+const timeoutMiddleware = require('./middleware/timeout');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
 app.use(express.json());
+
+// Global timeout middleware (90 seconds by default)
+app.use(timeoutMiddleware());
 
 // API routes
 app.use('/api', routes);
