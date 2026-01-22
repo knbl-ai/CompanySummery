@@ -14,8 +14,7 @@ class ScreenshotController {
       // Validate required parameters
       if (!url) {
         return res.status(400).json({
-          error: 'URL is required',
-          details: 'Request body must include a valid URL'
+          error: 'URL is required'
         });
       }
 
@@ -24,32 +23,28 @@ class ScreenshotController {
         new URL(url);
       } catch (e) {
         return res.status(400).json({
-          error: 'Invalid URL format',
-          details: 'URL must be a valid HTTP/HTTPS URL'
+          error: 'Invalid URL format'
         });
       }
 
       // Validate format if provided
       if (format && !['png', 'jpeg', 'webp'].includes(format)) {
         return res.status(400).json({
-          error: 'Invalid format',
-          details: 'Format must be png, jpeg, or webp'
+          error: 'Invalid format. Must be png, jpeg, or webp'
         });
       }
 
       // Validate quality if provided
       if (quality !== undefined && (quality < 1 || quality > 100)) {
         return res.status(400).json({
-          error: 'Invalid quality',
-          details: 'Quality must be between 1 and 100'
+          error: 'Invalid quality. Must be between 1 and 100'
         });
       }
 
       // Validate delay if provided
       if (delay !== undefined && (delay < 0 || delay > 30000)) {
         return res.status(400).json({
-          error: 'Invalid delay',
-          details: 'Delay must be between 0 and 30000 milliseconds'
+          error: 'Invalid delay. Must be between 0 and 30000 milliseconds'
         });
       }
 
@@ -93,6 +88,7 @@ class ScreenshotController {
     } catch (error) {
       const duration = Date.now() - startTime;
 
+      // Log detailed error server-side only
       console.error(`Screenshot capture error after ${duration}ms:`, error.message);
       console.error('Full error:', error);
 
@@ -100,20 +96,14 @@ class ScreenshotController {
       if (error instanceof TimeoutError || error.isTimeout) {
         return res.status(504).json({
           error: 'Screenshot capture timed out',
-          details: error.message,
           timeout: true,
-          operation: error.operation || 'unknown',
-          timeoutMs: error.timeout,
-          elapsedMs: duration,
           retryable: true
         });
       }
 
-      // Handle other errors with 500 status
+      // Return generic error to client (no internal details)
       res.status(500).json({
         error: 'Failed to capture screenshot',
-        details: error.message,
-        elapsedMs: duration,
         retryable: false
       });
     }

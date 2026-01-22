@@ -12,8 +12,7 @@ class ImageExtractionController {
       if (!url) {
         return res.status(400).json({
           success: false,
-          error: 'URL is required',
-          details: 'Please provide a valid URL in the request body'
+          error: 'URL is required'
         });
       }
 
@@ -23,8 +22,7 @@ class ImageExtractionController {
       } catch (error) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid URL format',
-          details: 'URL must be a valid HTTP or HTTPS URL'
+          error: 'Invalid URL format'
         });
       }
 
@@ -32,24 +30,21 @@ class ImageExtractionController {
       if (options.minWidth && (typeof options.minWidth !== 'number' || options.minWidth < 0)) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid minWidth',
-          details: 'minWidth must be a positive number'
+          error: 'Invalid minWidth. Must be a positive number'
         });
       }
 
       if (options.minHeight && (typeof options.minHeight !== 'number' || options.minHeight < 0)) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid minHeight',
-          details: 'minHeight must be a positive number'
+          error: 'Invalid minHeight. Must be a positive number'
         });
       }
 
       if (options.maxImages && (typeof options.maxImages !== 'number' || options.maxImages < 1)) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid maxImages',
-          details: 'maxImages must be a positive number'
+          error: 'Invalid maxImages. Must be a positive number'
         });
       }
 
@@ -78,6 +73,7 @@ class ImageExtractionController {
     } catch (error) {
       const elapsedMs = Date.now() - startTime;
 
+      // Log detailed error server-side only
       console.error('Image extraction error:', error);
 
       // Handle timeout errors specifically
@@ -85,42 +81,15 @@ class ImageExtractionController {
         return res.status(504).json({
           success: false,
           error: 'Image extraction timed out',
-          details: error.message,
           timeout: true,
-          operation: error.operation || 'Image extraction',
-          elapsedMs: elapsedMs,
           retryable: true
         });
       }
 
-      // Handle navigation/page load errors
-      if (error.message && error.message.includes('Navigation')) {
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to load page',
-          details: error.message,
-          elapsedMs: elapsedMs,
-          retryable: true
-        });
-      }
-
-      // Handle browser launch errors
-      if (error.message && error.message.includes('Browser')) {
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to launch browser',
-          details: error.message,
-          elapsedMs: elapsedMs,
-          retryable: true
-        });
-      }
-
-      // Generic error response
+      // Return generic error to client (no internal details)
       res.status(500).json({
         success: false,
         error: 'Failed to extract images',
-        details: error.message || 'An unexpected error occurred',
-        elapsedMs: elapsedMs,
         retryable: false
       });
     }
