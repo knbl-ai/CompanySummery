@@ -74,9 +74,13 @@ function concurrencyMiddleware(maxConcurrent = null) {
     // Acquire slot (may queue)
     await limiter.acquire();
 
-    // Release slot when response completes or connection closes
+    // Release slot when response completes or connection closes (only once)
+    let released = false;
     const releaseSlot = () => {
-      limiter.release();
+      if (!released) {
+        released = true;
+        limiter.release();
+      }
     };
 
     res.on('finish', releaseSlot);
