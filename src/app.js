@@ -9,6 +9,9 @@ const { corsMiddleware } = require('./middleware/cors');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Trust Cloud Run proxy
+app.set('trust proxy', true);
+
 // Security headers (helmet)
 app.use(helmet());
 

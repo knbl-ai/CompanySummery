@@ -88,9 +88,10 @@ class ScreenshotController {
     } catch (error) {
       const duration = Date.now() - startTime;
 
-      // Log detailed error server-side only
       console.error(`Screenshot capture error after ${duration}ms:`, error.message);
-      console.error('Full error:', error);
+      console.error('Error name:', error.name);
+      console.error('Error isTimeout:', error.isTimeout);
+      console.error('Stack trace:', error.stack);
 
       // Handle timeout errors specifically with 504 status
       if (error instanceof TimeoutError || error.isTimeout) {

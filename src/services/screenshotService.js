@@ -50,6 +50,15 @@ class ScreenshotService {
     const BROWSER_LAUNCH_TIMEOUT = getTimeoutFromEnv('SCREENSHOT_BROWSER_LAUNCH_TIMEOUT', 15000);
     const PAGE_NAVIGATION_TIMEOUT = getTimeoutFromEnv('SCREENSHOT_PAGE_NAVIGATION_TIMEOUT', 30000);
     const SCREENSHOT_CAPTURE_TIMEOUT = getTimeoutFromEnv('SCREENSHOT_CAPTURE_TIMEOUT', 20000);
+    const SCREENSHOT_GCS_UPLOAD_TIMEOUT = getTimeoutFromEnv('SCREENSHOT_GCS_UPLOAD_TIMEOUT', 15000);
+
+    console.log('Configured timeouts (ms):', {
+      OVERALL: OVERALL_TIMEOUT,
+      BROWSER_LAUNCH: BROWSER_LAUNCH_TIMEOUT,
+      PAGE_NAVIGATION: PAGE_NAVIGATION_TIMEOUT,
+      SCREENSHOT_CAPTURE: SCREENSHOT_CAPTURE_TIMEOUT,
+      GCS_UPLOAD: SCREENSHOT_GCS_UPLOAD_TIMEOUT
+    });
 
     // Store browser reference for cleanup on timeout
     let browser = null;
@@ -107,6 +116,9 @@ class ScreenshotService {
     console.log('Browser launched successfully');
 
     try {
+      const memoryBefore = process.memoryUsage();
+      console.log(`Memory before page creation: RSS=${Math.round(memoryBefore.rss / 1024 / 1024)}MB, Heap=${Math.round(memoryBefore.heapUsed / 1024 / 1024)}MB`);
+
       const page = await browser.newPage();
 
       // Set viewport
@@ -167,6 +179,9 @@ class ScreenshotService {
 
       console.log(`Screenshot captured successfully (${buffer.length} bytes)`);
 
+      const memoryAfter = process.memoryUsage();
+      console.log(`Memory after screenshot: RSS=${Math.round(memoryAfter.rss / 1024 / 1024)}MB, Heap=${Math.round(memoryAfter.heapUsed / 1024 / 1024)}MB`);
+
       // Graceful close with force-kill fallback
       await forceBrowserClose(browser, 3000);
 
@@ -186,22 +201,27 @@ class ScreenshotService {
    * @param {Object} page - Puppeteer page object
    */
   async _autoScroll(page) {
+    console.log('Starting page auto-scroll...');
     try {
       await page.evaluate(async () => {
         await new Promise((resolve) => {
           let totalHeight = 0;
-          const distance = 100; // Scroll 100px at a time
-          const delay = 100; // Wait 100ms between scrolls
+          const distance = 100;
+          const delay = 50; // Faster scroll
+          const maxHeight = 15000; // Cap at 15k pixels to prevent infinite loops
+          const scrollTimeout = 40000; // 40s max for scrolling
+          const startTime = Date.now();
 
           const timer = setInterval(() => {
             const scrollHeight = document.body.scrollHeight;
             window.scrollBy(0, distance);
             totalHeight += distance;
 
-            // Stop when we've scrolled to the bottom
-            if (totalHeight >= scrollHeight - window.innerHeight) {
+            const timeElapsed = Date.now() - startTime;
+
+            // Stop when we've scrolled to the bottom, reached max height, or timed out
+            if (totalHeight >= scrollHeight - window.innerHeight || totalHeight >= maxHeight || timeElapsed >= scrollTimeout) {
               clearInterval(timer);
-              // Scroll back to top
               window.scrollTo(0, 0);
               resolve();
             }

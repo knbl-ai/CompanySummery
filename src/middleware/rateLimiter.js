@@ -22,10 +22,8 @@ const rateLimiter = rateLimit({
     console.warn(`Rate limit exceeded for IP: ${req.ip}`);
     res.status(429).json(options.message);
   },
-  // Validate configuration
-  validate: {
-    xForwardedForHeader: false // Disable X-Forwarded-For validation warning for Cloud Run
-  }
+  // Disable all validation checks to prevent crashes in proxy environments
+  validate: false
 });
 
 module.exports = rateLimiter;
