@@ -1,40 +1,38 @@
-# Use Node.js as base image
-FROM node:18-slim
+FROM python:3.12-slim
 
-# Install Chromium and its dependencies
-RUN apt-get update \
-    && apt-get install -y chromium \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf \
-    fonts-liberation fonts-noto \
-    --no-install-recommends \
+# Install system dependencies required by Chromium
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libxshmfence1 \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    wget \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies with PUPPETEER_SKIP_DOWNLOAD set
-ENV NODE_ENV=production
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PORT=8080
-RUN npm ci
+# Install Chrome browser for patchright
+RUN patchright install chrome
 
-# Copy app source
 COPY . .
 
-# Expose the port the app runs on
 EXPOSE 8080
 
-# Create and switch to a non-root user
-RUN groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
-    && mkdir -p /home/pptruser/Downloads \
-    && chown -R pptruser:pptruser /home/pptruser \
-    && chown -R pptruser:pptruser /usr/src/app
-
-USER pptruser
-
-# Start the application
-CMD [ "npm", "start" ]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

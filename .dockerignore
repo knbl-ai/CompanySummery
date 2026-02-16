@@ -1,8 +1,12 @@
-node_modules
-npm-debug.log
-Dockerfile
-.dockerignore
+__pycache__
+*.pyc
 .git
 .gitignore
-README.md
 .env
+README.md
+*.md
+Dockerfile
+.dockerignore
+.venv
+.mypy_cache
+.pytest_cache
