@@ -150,15 +150,19 @@ async def capture_screenshot(
                 await asyncio.sleep(safe_delay / 1000)
 
             # Capture
-            screenshot_opts: dict = {"full_page": full_page, "type": fmt}
+            capture_timeout_ms = settings.screenshot_capture_timeout
+            screenshot_opts: dict = {
+                "full_page": full_page,
+                "type": fmt,
+                "timeout": capture_timeout_ms,
+            }
             if fmt in ("jpeg", "webp"):
                 screenshot_opts["quality"] = quality
 
-            capture_timeout = settings.screenshot_capture_timeout / 1000
-            logger.info("Capturing screenshot...")
+            logger.info("Capturing screenshot (timeout: %dms)...", capture_timeout_ms)
             buffer = await asyncio.wait_for(
                 page.screenshot(**screenshot_opts),
-                timeout=capture_timeout,
+                timeout=capture_timeout_ms / 1000,
             )
 
             logger.info("Screenshot captured (%d bytes)", len(buffer))
