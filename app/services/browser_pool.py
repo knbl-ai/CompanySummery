@@ -54,6 +54,7 @@ class BrowserPool:
             for attempt in range(2):
                 await self._ensure_browser()
                 try:
+                    proxy_settings = {"server": settings.proxy_url} if settings.proxy_url else None
                     context = await self._browser.new_context(
                         viewport={"width": 1920, "height": 1080},
                         user_agent=(
@@ -61,6 +62,16 @@ class BrowserPool:
                             "AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/131.0.0.0 Safari/537.36"
                         ),
+                        locale=settings.browser_locale,
+                        timezone_id=settings.browser_timezone,
+                        extra_http_headers={
+                            "Accept-Language": (
+                                f"{settings.browser_locale},"
+                                f"{settings.browser_locale.split('-')[0]};q=0.9,"
+                                "en;q=0.8"
+                            )
+                        },
+                        **({"proxy": proxy_settings} if proxy_settings else {}),
                     )
                     return context
                 except Exception:

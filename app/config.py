@@ -24,8 +24,15 @@ class Settings(BaseSettings):
     screenshot_max_concurrent: int = 3
     screenshot_post_load_delay: int = 5000
 
+    # Proxy (leave empty to disable)
+    proxy_url: str = ""
+
+    # Browser stealth
+    browser_locale: str = "en-US"
+    browser_timezone: str = "America/New_York"
+
     # Image extraction
-    image_extraction_timeout: int = 60000
+    image_extraction_timeout: int = 120000
     image_min_width: int = 100
     image_min_height: int = 100
     image_include_backgrounds: bool = False
