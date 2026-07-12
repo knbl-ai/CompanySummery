@@ -7,15 +7,74 @@ from app.services.browser_pool import browser_pool
 
 logger = logging.getLogger(__name__)
 
-# JavaScript to extract image data from the page — ported directly from the Node.js version
-EXTRACT_IMAGES_JS = """(includeBackgrounds) => {
-    const images = [];
+# JavaScript to extract image data from the page.
+#
+# Three source channels, deduped by URL then dimension-probed:
+#   1. <img> elements — the URL returned is the LARGEST srcset candidate
+#      (fallback: currentSrc, then src). Browsers pick a viewport-sized srcset
+#      candidate and naturalWidth/Height describe THAT pick, while img.src can
+#      be a tiny fallback (WP galleries ship src="…-36x36.jpg" with the real
+#      sizes in srcset) — reporting src with currentSrc's dimensions hands
+#      callers a thumbnail URL labeled with full-size dimensions.
+#   2. Attribute-declared sources (data-img-url / data-bg / …) — JS sliders
+#      (e.g. the Enfold/avia slideshow) keep their slides in data attributes
+#      and paint them as lazy CSS backgrounds, so the page's best photos often
+#      have no <img> element at all.
+#   3. Computed background-image styles (behind includeBackgrounds).
+#
+# Candidates whose true size is unknown (channels 2/3, srcset upgrades) are
+# probed in-browser with Image() so width/height are always real pixels.
+# Every entry carries anchorHref (enclosing <a>) so callers can tell content
+# images from navigation cards (e.g. "related projects" carousels).
+EXTRACT_IMAGES_JS = """async (includeBackgrounds) => {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
 
-    const imgElements = Array.from(document.querySelectorAll('img'));
+    const toAbs = (u) => {
+        try { return new URL(u, document.baseURI).href; } catch (e) { return null; }
+    };
 
-    imgElements.forEach((img, index) => {
+    const formatOf = (src) => {
+        if (!src) return 'unknown';
+        const ext = src.split('.').pop().split('?')[0].toLowerCase();
+        if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
+            return ext === 'jpg' ? 'jpeg' : ext;
+        }
+        return 'unknown';
+    };
+
+    // Largest w-descriptor candidate of a srcset, or null.
+    const largestSrcsetCandidate = (srcset) => {
+        if (!srcset) return null;
+        let best = null;
+        for (const part of srcset.split(',')) {
+            const tokens = part.trim().split(/\\s+/);
+            if (!tokens[0]) continue;
+            const w = tokens[1] && /^\\d+w$/.test(tokens[1]) ? parseInt(tokens[1]) : 0;
+            if (!best || w > best.w) best = { url: tokens[0], w: w };
+        }
+        return best && best.url ? best : null;
+    };
+
+    const anchorHrefOf = (el) => {
+        const a = el.closest ? el.closest('a[href]') : null;
+        return a ? a.href : null;
+    };
+
+    const positionOf = (rect) => ({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        visible: rect.top < viewportHeight && rect.bottom > 0 && rect.left < viewportWidth && rect.right > 0
+    });
+
+    const productKeywords = ['product', 'iphone', 'macbook', 'ipad', 'watch', 'airpods', 'laptop', 'phone', 'tablet'];
+    const matchesAny = (haystacks, needles) =>
+        needles.some(n => haystacks.some(h => h.includes(n)));
+
+    const candidates = [];
+
+    // --- channel 1: <img> elements -------------------------------------------
+    for (const img of Array.from(document.querySelectorAll('img'))) {
         const rect = img.getBoundingClientRect();
 
         let inHeader = false;
@@ -23,101 +82,142 @@ EXTRACT_IMAGES_JS = """(includeBackgrounds) => {
         let depth = 0;
         while (parentEl && depth < 5) {
             const tagName = parentEl.tagName.toLowerCase();
-            if (tagName === 'header' || tagName === 'nav') {
-                inHeader = true;
-                break;
-            }
+            if (tagName === 'header' || tagName === 'nav') { inHeader = true; break; }
             parentEl = parentEl.parentElement;
             depth++;
         }
 
-        const src = img.src || '';
         const alt = img.alt || '';
-        const className = img.className || '';
-        const containsLogo =
-            src.toLowerCase().includes('logo') ||
-            alt.toLowerCase().includes('logo') ||
-            className.toLowerCase().includes('logo');
+        const className = String(img.className || '');
+        let src = img.currentSrc || img.src || '';
+        let width = img.naturalWidth || 0;
+        let height = img.naturalHeight || 0;
+        let needsProbe = false;
 
-        const productKeywords = ['product', 'iphone', 'macbook', 'ipad', 'watch', 'airpods', 'laptop', 'phone', 'tablet'];
-        const containsProductKeywords = productKeywords.some(keyword =>
-            src.toLowerCase().includes(keyword) ||
-            alt.toLowerCase().includes(keyword) ||
-            className.toLowerCase().includes(keyword)
-        );
-
-        const isLazyLoaded =
-            img.hasAttribute('data-src') ||
-            img.hasAttribute('loading') ||
-            img.hasAttribute('data-lazy');
-
-        let format = 'unknown';
-        if (src) {
-            const ext = src.split('.').pop().split('?')[0].toLowerCase();
-            if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
-                format = ext === 'jpg' ? 'jpeg' : ext;
+        // Unloaded lazy image: the real URL sits in a data attribute.
+        if (!src || src.startsWith('data:')) {
+            const lazy = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy');
+            const lazyAbs = lazy && toAbs(lazy);
+            if (lazyAbs && !lazyAbs.startsWith('data:')) {
+                src = lazyAbs; width = 0; height = 0; needsProbe = true;
             }
         }
 
-        images.push({
+        // Upgrade to the largest declared srcset candidate when it beats what
+        // the browser loaded for this viewport.
+        const best = largestSrcsetCandidate(img.srcset);
+        if (best) {
+            const bestAbs = toAbs(best.url);
+            if (bestAbs && bestAbs !== src && best.w >= width) {
+                src = bestAbs;
+                width = 0; height = 0; needsProbe = true;
+            }
+        }
+        if (!src || src.startsWith('data:')) continue;
+
+        const lower = [src.toLowerCase(), alt.toLowerCase(), className.toLowerCase()];
+        candidates.push({
             src: src,
             srcset: img.srcset || null,
             alt: alt,
-            width: img.naturalWidth || 0,
-            height: img.naturalHeight || 0,
-            format: format,
-            position: {
-                x: Math.round(rect.left),
-                y: Math.round(rect.top),
-                visible: rect.top < viewportHeight && rect.bottom > 0 && rect.left < viewportWidth && rect.right > 0
-            },
-            containsLogo: containsLogo,
-            containsProductKeywords: containsProductKeywords,
+            width: width,
+            height: height,
+            format: formatOf(src),
+            position: positionOf(rect),
+            containsLogo: matchesAny(lower, ['logo']),
+            containsProductKeywords: matchesAny(lower, productKeywords),
             inHeader: inHeader,
-            isLazyLoaded: isLazyLoaded,
+            isLazyLoaded: img.hasAttribute('data-src') || img.hasAttribute('loading') || img.hasAttribute('data-lazy'),
             className: className,
-            parentTag: img.parentElement ? img.parentElement.tagName.toLowerCase() : null
-        });
-    });
-
-    if (includeBackgrounds) {
-        const allElements = Array.from(document.querySelectorAll('*'));
-
-        allElements.forEach(el => {
-            const style = window.getComputedStyle(el);
-            const bgImage = style.backgroundImage;
-
-            if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
-                const urlMatch = bgImage.match(/url\\(['"]?([^'"]+)['"]?\\)/);
-                if (urlMatch && urlMatch[1]) {
-                    const url = urlMatch[1];
-                    if (url.startsWith('data:')) return;
-
-                    const rect = el.getBoundingClientRect();
-
-                    images.push({
-                        src: url,
-                        srcset: null,
-                        alt: '',
-                        width: Math.round(rect.width),
-                        height: Math.round(rect.height),
-                        format: 'background',
-                        position: {
-                            x: Math.round(rect.left),
-                            y: Math.round(rect.top),
-                            visible: rect.top < viewportHeight && rect.bottom > 0
-                        },
-                        containsLogo: false,
-                        containsProductKeywords: false,
-                        inHeader: false,
-                        isLazyLoaded: false,
-                        className: el.className || '',
-                        parentTag: 'background'
-                    });
-                }
-            }
+            parentTag: img.parentElement ? img.parentElement.tagName.toLowerCase() : null,
+            anchorHref: anchorHrefOf(img),
+            needsProbe: needsProbe
         });
     }
+
+    // --- channel 2: attribute-declared slider/lazy sources --------------------
+    const SOURCE_ATTRS = ['data-img-url', 'data-bg', 'data-background', 'data-background-image', 'data-lazy-src', 'data-large_image'];
+    for (const attr of SOURCE_ATTRS) {
+        for (const el of Array.from(document.querySelectorAll('[' + attr + ']'))) {
+            if (el.tagName === 'IMG') continue; // handled by channel 1
+            const url = toAbs(el.getAttribute(attr));
+            if (!url || url.startsWith('data:')) continue;
+            const rect = el.getBoundingClientRect();
+            const className = String(el.className || '');
+            const lower = [url.toLowerCase(), className.toLowerCase()];
+            candidates.push({
+                src: url,
+                srcset: null,
+                alt: el.getAttribute('alt') || el.getAttribute('title') || '',
+                width: 0,
+                height: 0,
+                format: formatOf(url),
+                position: positionOf(rect),
+                containsLogo: matchesAny(lower, ['logo']),
+                containsProductKeywords: matchesAny(lower, productKeywords),
+                inHeader: false,
+                isLazyLoaded: true,
+                className: className,
+                parentTag: attr,
+                anchorHref: anchorHrefOf(el),
+                needsProbe: true
+            });
+        }
+    }
+
+    // --- channel 3: computed background images (opt-in) -----------------------
+    if (includeBackgrounds) {
+        for (const el of Array.from(document.querySelectorAll('*'))) {
+            const bgImage = window.getComputedStyle(el).backgroundImage;
+            if (!bgImage || bgImage === 'none' || !bgImage.includes('url(')) continue;
+            const urlMatch = bgImage.match(/url\\(['"]?([^'"]+)['"]?\\)/);
+            if (!urlMatch || !urlMatch[1]) continue;
+            const url = toAbs(urlMatch[1]);
+            if (!url || url.startsWith('data:')) continue;
+            const rect = el.getBoundingClientRect();
+            candidates.push({
+                src: url,
+                srcset: null,
+                alt: '',
+                width: 0,
+                height: 0,
+                format: 'background',
+                position: positionOf(rect),
+                containsLogo: url.toLowerCase().includes('logo'),
+                containsProductKeywords: false,
+                inHeader: false,
+                isLazyLoaded: false,
+                className: String(el.className || ''),
+                parentTag: 'background',
+                anchorHref: anchorHrefOf(el),
+                needsProbe: true
+            });
+        }
+    }
+
+    // --- dedupe by URL (prefer entries with known dimensions) -----------------
+    const bySrc = new Map();
+    for (const c of candidates) {
+        const prev = bySrc.get(c.src);
+        if (!prev || (prev.needsProbe && !c.needsProbe)) bySrc.set(c.src, c);
+    }
+    const images = Array.from(bySrc.values());
+
+    // --- probe unknown dimensions so width/height are always real pixels ------
+    const MAX_PROBES = 60;
+    const toProbe = images.filter(c => c.needsProbe).slice(0, MAX_PROBES);
+    await Promise.all(toProbe.map(c => new Promise(resolve => {
+        const probe = new Image();
+        const finish = () => {
+            if (probe.naturalWidth) { c.width = probe.naturalWidth; c.height = probe.naturalHeight; }
+            resolve();
+        };
+        probe.onload = finish;
+        probe.onerror = () => resolve();
+        setTimeout(resolve, 8000);
+        probe.src = c.src;
+    })));
+    images.forEach(c => { delete c.needsProbe; });
 
     const lazyLoadedCount = images.filter(img => img.isLazyLoaded).length;
 
@@ -185,6 +285,7 @@ def _classify_images(images: list[dict], page_context: dict) -> list[dict]:
                 "position": img["position"],
                 "classification": classification,
                 "isLazyLoaded": img.get("isLazyLoaded", False),
+                "anchorHref": img.get("anchorHref"),
             }
         )
     return result
