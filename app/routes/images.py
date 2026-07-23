@@ -29,6 +29,7 @@ async def extract_images_endpoint(request: Request, body: ImageExtractionRequest
     min_width = opts.minWidth if opts else None
     min_height = opts.minHeight if opts else None
     max_images = opts.maxImages if opts else 100
+    include_backgrounds = opts.includeBackgrounds if opts else None
 
     last_exc = None
     for attempt in range(_MAX_ATTEMPTS):
@@ -41,6 +42,7 @@ async def extract_images_endpoint(request: Request, body: ImageExtractionRequest
                 min_width=min_width,
                 min_height=min_height,
                 max_images=max_images,
+                include_backgrounds=include_backgrounds,
             )
             last_exc = None
             break

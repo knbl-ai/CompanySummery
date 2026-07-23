@@ -36,6 +36,7 @@ class ExtractedImage(BaseModel):
     position: ImagePosition
     classification: str
     isLazyLoaded: bool
+    anchorHref: Optional[str] = None
 
 
 class ImageExtractionMetadata(BaseModel):
@@ -43,6 +44,7 @@ class ImageExtractionMetadata(BaseModel):
     totalImages: int
     filteredOut: int
     lazyLoadedCount: int
+    unprobedDropped: int = 0
     elapsedMs: int
 
 
@@ -52,6 +54,30 @@ class ImageExtractionResponse(BaseModel):
     totalImages: int
     images: list[ExtractedImage]
     metadata: ImageExtractionMetadata
+
+
+class CrawledImage(ExtractedImage):
+    pageUrl: str
+
+
+class CrawlPageResult(BaseModel):
+    url: str
+    status: str  # "ok" | "error" | "timeout" | "skipped_budget"
+    imagesFound: int = 0
+    durationMs: int = 0
+    score: float = 0
+    screenshotUrl: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CrawlResponse(BaseModel):
+    success: bool
+    url: str
+    partial: bool
+    totalImages: int
+    images: list[CrawledImage]
+    pages: list[CrawlPageResult]
+    metadata: dict[str, Any]
 
 
 class ErrorResponse(BaseModel):

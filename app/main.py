@@ -5,11 +5,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from app.config import settings
+from app.limits import limiter
+from app.routes.crawl import router as crawl_router
 from app.routes.images import router as images_router
 from app.routes.screenshot import router as screenshot_router
 from app.services.browser_pool import browser_pool
@@ -19,8 +19,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-limiter = Limiter(key_func=get_remote_address, default_limits=[settings.rate_limit])
 
 
 @asynccontextmanager
@@ -68,6 +66,7 @@ app.add_middleware(
 # Routes
 app.include_router(screenshot_router, prefix="/api")
 app.include_router(images_router, prefix="/api")
+app.include_router(crawl_router, prefix="/api")
 
 
 @app.get("/")

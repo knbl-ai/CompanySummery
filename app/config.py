@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     image_min_height: int = 100
     image_include_backgrounds: bool = False
 
+    # Site crawl (milliseconds)
+    crawl_max_pages: int = 8
+    crawl_time_budget_ms: int = 240000  # < Cloud Run 300s, leaves serialization headroom
+    crawl_page_timeout_ms: int = 45000
+    crawl_min_remaining_ms: int = 20000
+
     # Rate limiting
     rate_limit: str = "100/15minutes"
 

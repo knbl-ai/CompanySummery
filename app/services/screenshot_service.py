@@ -4,24 +4,42 @@ import time
 
 from app.config import settings
 from app.services.browser_pool import browser_pool
+from app.services.page_prep import (
+    AUTO_SCROLL_JS,
+    WAIT_FOR_IMAGES_JS,
+    dismiss_consent,
+    neutralize_animations,
+)
 
 logger = logging.getLogger(__name__)
 
-# SPA-aware content readiness check
+# SPA-aware content readiness check. Counts CSS background-images alongside <img>
+# and text — image-led sites (hotels, portfolios) often paint their hero entirely
+# via background-image with little text, and without the bgCount signal they poll
+# to timeout as "not ready".
 WAIT_FOR_CONTENT_JS = """async () => {
     const maxWait = 20000;
     const start = Date.now();
 
     const SPA_SELECTORS = ['#root', '#app', '#__next', '#__nuxt', '[data-reactroot]', 'main'];
 
+    const countBackgrounds = () => {
+        // Bounded probe: this runs every poll iteration, so cap the elements scanned.
+        return Array.from(document.querySelectorAll('div,section,figure,a,span,li'))
+            .slice(0, 400)
+            .filter(el => (window.getComputedStyle(el).backgroundImage || '').includes('url(')).length;
+    };
+
     while (Date.now() - start < maxWait) {
+        const bgCount = countBackgrounds();
+
         // Check SPA root containers for rendered children with real content
         for (const sel of SPA_SELECTORS) {
             const el = document.querySelector(sel);
             if (el && el.children.length > 0) {
                 const text = el.innerText ? el.innerText.trim() : '';
                 const imgs = el.querySelectorAll('img[src]:not([src=""])');
-                if (text.length > 50 || imgs.length > 1) {
+                if (text.length > 50 || imgs.length > 1 || bgCount > 2) {
                     // Found a rendered SPA root — wait 1s more for async data
                     await new Promise(r => setTimeout(r, 1000));
                     const finalText = el.innerText ? el.innerText.trim() : '';
@@ -34,7 +52,7 @@ WAIT_FOR_CONTENT_JS = """async () => {
         // Fallback: check body for meaningful content (higher threshold)
         const bodyText = document.body ? document.body.innerText.trim() : '';
         const bodyImgs = document.querySelectorAll('img[src]:not([src=""])');
-        if (bodyText.length > 200 || bodyImgs.length > 3) {
+        if (bodyText.length > 200 || bodyImgs.length > 3 || bgCount > 4) {
             return {ready: true, textLen: bodyText.length, imgCount: bodyImgs.length, source: 'body'};
         }
 
@@ -43,41 +61,6 @@ WAIT_FOR_CONTENT_JS = """async () => {
     // Timed out — return whatever state we have
     const text = document.body ? document.body.innerText.trim() : '';
     return {ready: false, textLen: text.length, imgCount: document.querySelectorAll('img').length, source: 'timeout'};
-}"""
-
-AUTO_SCROLL_JS = """async () => {
-    await new Promise((resolve) => {
-        const viewportHeight = window.innerHeight;
-        const distance = Math.floor(viewportHeight * 0.8);
-        const maxHeight = 15000;
-        const scrollTimeout = 40000;
-        const startTime = Date.now();
-        let totalHeight = 0;
-
-        const timer = setInterval(() => {
-            const scrollHeight = document.body.scrollHeight;
-            window.scrollBy(0, distance);
-            totalHeight += distance;
-
-            if (totalHeight >= scrollHeight - viewportHeight || totalHeight >= maxHeight || Date.now() - startTime >= scrollTimeout) {
-                clearInterval(timer);
-                window.scrollTo(0, 0);
-                resolve();
-            }
-        }, 200);
-    });
-}"""
-
-WAIT_FOR_IMAGES_JS = """async () => {
-    const images = Array.from(document.querySelectorAll('img'));
-    await Promise.all(images.map(img => {
-        if (img.complete) return;
-        return new Promise(resolve => {
-            img.addEventListener('load', resolve);
-            img.addEventListener('error', resolve);
-            setTimeout(resolve, 3000);
-        });
-    }));
 }"""
 
 
@@ -108,6 +91,11 @@ async def capture_screenshot(
                 logger.info("Load state reached")
             except Exception:
                 logger.info("Load state timeout (30s), continuing...")
+
+            # Clear consent overlays and force scroll-reveal content visible BEFORE
+            # the readiness poll, so it measures the real page, not the banner.
+            await dismiss_consent(page)
+            await neutralize_animations(page)
 
             # Wait for real visible content (SPA-aware)
             logger.info("Waiting for visible content to render...")
@@ -148,6 +136,11 @@ async def capture_screenshot(
                 safe_delay = min(total_delay, 10000)
                 logger.info("Waiting %dms for dynamic content...", safe_delay)
                 await asyncio.sleep(safe_delay / 1000)
+
+            # Second consent pass right before capture: CMPs load asynchronously and
+            # often appear seconds after `load`. Style tags injected twice are harmless.
+            await dismiss_consent(page)
+            await neutralize_animations(page)
 
             # Capture
             capture_timeout_ms = settings.screenshot_capture_timeout

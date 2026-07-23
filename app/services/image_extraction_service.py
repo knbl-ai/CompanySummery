@@ -4,6 +4,12 @@ import time
 
 from app.config import settings
 from app.services.browser_pool import browser_pool
+from app.services.page_prep import (
+    AUTO_SCROLL_JS,
+    WAIT_FOR_IMAGES_JS,
+    dismiss_consent,
+    neutralize_animations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +110,35 @@ EXTRACT_IMAGES_JS = """async (includeBackgrounds) => {
         }
 
         // Upgrade to the largest declared srcset candidate when it beats what
-        // the browser loaded for this viewport.
-        const best = largestSrcsetCandidate(img.srcset);
+        // the browser loaded for this viewport. Candidates come from the img's
+        // own srcset AND any <picture><source srcset> siblings — art-directed
+        // pages often keep the real image only in <source>.
+        const srcsets = [];
+        if (img.srcset) srcsets.push(img.srcset);
+        const pic = img.closest ? img.closest('picture') : null;
+        if (pic) {
+            for (const s of Array.from(pic.querySelectorAll('source[srcset]'))) {
+                if (s.srcset) srcsets.push(s.srcset);
+            }
+        }
+        let best = null;
+        for (const ss of srcsets) {
+            const cand = largestSrcsetCandidate(ss);
+            if (cand && (!best || cand.w > best.w)) best = cand;
+        }
         if (best) {
             const bestAbs = toAbs(best.url);
             if (bestAbs && bestAbs !== src && best.w >= width) {
                 src = bestAbs;
-                width = 0; height = 0; needsProbe = true;
+                if (best.w > 0 && width > 0 && height > 0) {
+                    // Same image at a different resolution: the w-descriptor is the
+                    // true width; scale height by the loaded aspect ratio — no probe.
+                    height = Math.round(best.w * height / width);
+                    width = best.w;
+                    needsProbe = false;
+                } else {
+                    width = 0; height = 0; needsProbe = true;
+                }
             }
         }
         if (!src || src.startsWith('data:')) continue;
@@ -204,19 +232,32 @@ EXTRACT_IMAGES_JS = """async (includeBackgrounds) => {
     const images = Array.from(bySrc.values());
 
     // --- probe unknown dimensions so width/height are always real pixels ------
-    const MAX_PROBES = 60;
+    // Chunked so a background-heavy page doesn't fire 150 parallel fetches at the
+    // origin, with a global wall-clock budget so probing can't eat the extraction
+    // timeout on a slow CDN.
+    const MAX_PROBES = 150;
+    const PROBE_TIMEOUT_MS = 5000;
+    const PROBE_BUDGET_MS = 25000;
+    const PROBE_CHUNK = 20;
     const toProbe = images.filter(c => c.needsProbe).slice(0, MAX_PROBES);
-    await Promise.all(toProbe.map(c => new Promise(resolve => {
-        const probe = new Image();
-        const finish = () => {
-            if (probe.naturalWidth) { c.width = probe.naturalWidth; c.height = probe.naturalHeight; }
-            resolve();
-        };
-        probe.onload = finish;
-        probe.onerror = () => resolve();
-        setTimeout(resolve, 8000);
-        probe.src = c.src;
-    })));
+    const probeStart = Date.now();
+    for (let i = 0; i < toProbe.length; i += PROBE_CHUNK) {
+        if (Date.now() - probeStart > PROBE_BUDGET_MS) break;
+        await Promise.all(toProbe.slice(i, i + PROBE_CHUNK).map(c => new Promise(resolve => {
+            const probe = new Image();
+            const finish = () => {
+                if (probe.naturalWidth) { c.width = probe.naturalWidth; c.height = probe.naturalHeight; }
+                resolve();
+            };
+            probe.onload = finish;
+            probe.onerror = () => resolve();
+            setTimeout(resolve, PROBE_TIMEOUT_MS);
+            probe.src = c.src;
+        })));
+    }
+    // Candidates still dimensionless get dropped by the size filter — count them
+    // so silent losses are visible in metadata.
+    const unprobedCount = images.filter(c => c.needsProbe && !c.width).length;
     images.forEach(c => { delete c.needsProbe; });
 
     const lazyLoadedCount = images.filter(img => img.isLazyLoaded).length;
@@ -228,7 +269,8 @@ EXTRACT_IMAGES_JS = """async (includeBackgrounds) => {
             viewportHeight: viewportHeight,
             scrollHeight: document.body.scrollHeight
         },
-        lazyLoadedCount: lazyLoadedCount
+        lazyLoadedCount: lazyLoadedCount,
+        unprobedCount: unprobedCount
     };
 }"""
 
@@ -261,7 +303,9 @@ def _classify_images(images: list[dict], page_context: dict) -> list[dict]:
             and img["height"] > 400
         ):
             classification = "hero"
-        elif img.get("containsLogo") and img.get("inHeader") and img["width"] < 300:
+        elif img.get("containsLogo") and img["width"] < 600:
+            # No inHeader requirement: footer/group logos and srcset-upgraded header
+            # logos (probed at full size, often 300-500px wide) are still logos.
             classification = "logo"
         elif (
             img["width"] >= 300
@@ -291,17 +335,105 @@ def _classify_images(images: list[dict], page_context: dict) -> list[dict]:
     return result
 
 
+async def prepare_and_extract(
+    page,
+    url: str,
+    *,
+    min_width: int,
+    min_height: int,
+    max_images: int = 100,
+    include_backgrounds: bool = False,
+    nav_timeout_ms: int | None = None,
+) -> dict:
+    """Navigate an already-created page to `url`, prepare it (consent, animations,
+    scroll, lazy loads) and run the in-browser extraction. Shared by the single-page
+    endpoint and the site crawler — the caller owns page/context lifecycle."""
+    nav_timeout = nav_timeout_ms or settings.screenshot_page_navigation_timeout
+    logger.info("Navigating to %s for image extraction...", url)
+
+    await page.goto(url, wait_until="commit", timeout=nav_timeout)
+    logger.info("Navigation committed, waiting for load state...")
+
+    try:
+        await page.wait_for_load_state("load", timeout=30000)
+        logger.info("Load state reached")
+    except Exception:
+        logger.info("Load state timeout (30s), continuing...")
+
+    # Consent overlays lock body scroll (starving lazy loaders below the fold) and
+    # reveal-animated sliders only set their background-image once "shown" — clear
+    # both before scrolling.
+    await dismiss_consent(page)
+    await neutralize_animations(page)
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        logger.info("Network idle timeout, continuing...")
+
+    # Wait for page body to have meaningful content (SPA support)
+    await page.evaluate("""async () => {
+        const maxWait = 10000;
+        const start = Date.now();
+        while (Date.now() - start < maxWait) {
+            if (document.body && document.body.innerHTML.length > 500) return;
+            await new Promise(r => setTimeout(r, 300));
+        }
+    }""")
+
+    # Auto-scroll to trigger lazy loaders
+    await page.evaluate(AUTO_SCROLL_JS)
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        logger.info("Network idle timeout after scroll, continuing...")
+
+    await page.evaluate(WAIT_FOR_IMAGES_JS)
+
+    # Post-load delay
+    post_load = settings.screenshot_post_load_delay
+    if post_load > 0:
+        safe_delay = min(post_load, 10000)
+        logger.info("Waiting %dms for dynamic content...", safe_delay)
+        await asyncio.sleep(safe_delay / 1000)
+
+    # Extract image data using the in-browser JS
+    logger.info("Extracting image data...")
+    image_data = await page.evaluate(EXTRACT_IMAGES_JS, include_backgrounds)
+
+    all_images = image_data["allImages"]
+    page_context = image_data["pageContext"]
+
+    logger.info("Extracted %d total images", len(all_images))
+
+    filtered = _filter_images(all_images, min_width, min_height)
+    logger.info("After filtering: %d images", len(filtered))
+
+    limited = filtered[:max_images]
+    classified = _classify_images(limited, page_context)
+
+    return {
+        "images": classified,
+        "filtered_count": len(all_images) - len(filtered),
+        "lazy_loaded_count": image_data["lazyLoadedCount"],
+        "unprobed_dropped": image_data.get("unprobedCount", 0),
+    }
+
+
 async def extract_images(
     url: str,
     min_width: int | None = None,
     min_height: int | None = None,
     max_images: int = 100,
-    include_backgrounds: bool = False,
+    include_backgrounds: bool | None = None,
 ) -> dict:
     if min_width is None:
         min_width = settings.image_min_width
     if min_height is None:
         min_height = settings.image_min_height
+    if include_backgrounds is None:
+        include_backgrounds = settings.image_include_backgrounds
 
     overall_timeout = settings.image_extraction_timeout / 1000
     start = time.time()
@@ -310,104 +442,14 @@ async def extract_images(
         context = await browser_pool.acquire_context()
         try:
             page = await context.new_page()
-
-            nav_timeout = settings.screenshot_page_navigation_timeout
-            logger.info("Navigating to %s for image extraction...", url)
-
-            await page.goto(url, wait_until="commit", timeout=nav_timeout)
-            logger.info("Navigation committed, waiting for load state...")
-
-            try:
-                await page.wait_for_load_state("load", timeout=30000)
-                logger.info("Load state reached")
-            except Exception:
-                logger.info("Load state timeout (30s), continuing...")
-
-            try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                logger.info("Network idle timeout, continuing...")
-
-            # Wait for page body to have meaningful content (SPA support)
-            await page.evaluate("""async () => {
-                const maxWait = 10000;
-                const start = Date.now();
-                while (Date.now() - start < maxWait) {
-                    if (document.body && document.body.innerHTML.length > 500) return;
-                    await new Promise(r => setTimeout(r, 300));
-                }
-            }""")
-
-            # Auto-scroll with 80% viewport height, 200ms delay
-            await page.evaluate("""async () => {
-                await new Promise((resolve) => {
-                    const viewportHeight = window.innerHeight;
-                    const distance = Math.floor(viewportHeight * 0.8);
-                    const maxHeight = 15000;
-                    const scrollTimeout = 40000;
-                    const startTime = Date.now();
-                    let totalHeight = 0;
-
-                    const timer = setInterval(() => {
-                        const scrollHeight = document.body.scrollHeight;
-                        window.scrollBy(0, distance);
-                        totalHeight += distance;
-
-                        if (totalHeight >= scrollHeight - viewportHeight || totalHeight >= maxHeight || Date.now() - startTime >= scrollTimeout) {
-                            clearInterval(timer);
-                            window.scrollTo(0, 0);
-                            resolve();
-                        }
-                    }, 200);
-                });
-            }""")
-
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                logger.info("Network idle timeout after scroll, continuing...")
-
-            # Wait for images to load
-            await page.evaluate("""async () => {
-                const images = Array.from(document.querySelectorAll('img'));
-                await Promise.all(images.map(img => {
-                    if (img.complete) return;
-                    return new Promise(resolve => {
-                        img.addEventListener('load', resolve);
-                        img.addEventListener('error', resolve);
-                        setTimeout(resolve, 3000);
-                    });
-                }));
-            }""")
-
-            # Post-load delay
-            post_load = settings.screenshot_post_load_delay
-            if post_load > 0:
-                safe_delay = min(post_load, 10000)
-                logger.info("Waiting %dms for dynamic content...", safe_delay)
-                await asyncio.sleep(safe_delay / 1000)
-
-            # Extract image data using the in-browser JS
-            logger.info("Extracting image data...")
-            image_data = await page.evaluate(EXTRACT_IMAGES_JS, include_backgrounds)
-
-            all_images = image_data["allImages"]
-            page_context = image_data["pageContext"]
-            lazy_loaded_count = image_data["lazyLoadedCount"]
-
-            logger.info("Extracted %d total images", len(all_images))
-
-            filtered = _filter_images(all_images, min_width, min_height)
-            logger.info("After filtering: %d images", len(filtered))
-
-            limited = filtered[:max_images]
-            classified = _classify_images(limited, page_context)
-
-            return {
-                "images": classified,
-                "filtered_count": len(all_images) - len(filtered),
-                "lazy_loaded_count": lazy_loaded_count,
-            }
+            return await prepare_and_extract(
+                page,
+                url,
+                min_width=min_width,
+                min_height=min_height,
+                max_images=max_images,
+                include_backgrounds=include_backgrounds,
+            )
         finally:
             await browser_pool.release_context(context)
 
@@ -418,15 +460,15 @@ async def extract_images(
         raise
 
     elapsed = int((time.time() - start) * 1000)
-    processing_time = elapsed
 
     return {
         "images": result["images"],
         "metadata": {
-            "processingTime": processing_time,
+            "processingTime": elapsed,
             "totalImages": len(result["images"]),
             "filteredOut": result["filtered_count"],
             "lazyLoadedCount": result["lazy_loaded_count"],
+            "unprobedDropped": result["unprobed_dropped"],
             "elapsedMs": elapsed,
         },
     }

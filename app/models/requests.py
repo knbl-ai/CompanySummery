@@ -36,8 +36,30 @@ class ImageExtractionOptions(BaseModel):
     minWidth: int = Field(default=100, ge=0)
     minHeight: int = Field(default=100, ge=0)
     maxImages: int = Field(default=100, ge=1, le=500)
+    # None → service default (settings.image_include_backgrounds). Explicitly true
+    # enables the CSS background-image channel — essential for image-led sites
+    # (hotels, portfolios) that paint photography via background:url(...).
+    includeBackgrounds: Optional[bool] = None
 
 
 class ImageExtractionRequest(BaseModel):
     url: str
     options: Optional[ImageExtractionOptions] = None
+
+
+class CrawlOptions(BaseModel):
+    maxPages: int = Field(default=8, ge=1, le=20)
+    maxImages: int = Field(default=200, ge=1, le=1000)
+    minWidth: int = Field(default=100, ge=0)
+    minHeight: int = Field(default=100, ge=0)
+    includeBackgrounds: bool = True
+    # Extends (not replaces) the built-in page-priority keywords, at top weight.
+    priorityKeywords: Optional[list[str]] = None
+    includeScreenshots: bool = False
+    useSitemap: bool = True
+    timeBudgetMs: int = Field(default=240000, ge=30000, le=280000)
+
+
+class CrawlRequest(BaseModel):
+    url: str
+    options: Optional[CrawlOptions] = None
