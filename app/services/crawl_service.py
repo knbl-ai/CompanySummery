@@ -66,8 +66,27 @@ def _norm_host(host: str) -> str:
     return host.lower().removeprefix("www.")
 
 
-def _normalize_link(href: str, start_host: str) -> Optional[str]:
-    """Absolute same-host page URL with fragment stripped, or None to discard."""
+def _in_prefix(path: str, prefix: str) -> bool:
+    """Is a page path inside the crawl's section?
+
+    Segment-boundary match, so `/barcelo-budapest` owns `/barcelo-budapest/rooms` but not
+    `/barcelo-budapest-spa-partners`."""
+    path = (path or "").rstrip("/")
+    prefix = (prefix or "").rstrip("/")
+    if not prefix:
+        return True
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _normalize_link(href: str, start_host: str, page_prefix: str = "") -> Optional[str]:
+    """Absolute same-host page URL with fragment stripped, or None to discard.
+
+    `page_prefix` bounds the crawl to one section of a host. Host-only filtering is right when
+    the host IS the subject and wrong when one host carries a page per subject: a hotel chain
+    serves every property off one domain, so crawling from
+    `barcelo.com/en-us/barcelo-budapest/` otherwise sweeps in Praha's rooms and the chain's
+    spa landing and files them all as Budapest's. Both anchors and sitemap URLs funnel through
+    here, so this is the only place the bound has to be applied."""
     try:
         parts = urlsplit(href)
     except ValueError:
@@ -78,6 +97,8 @@ def _normalize_link(href: str, start_host: str) -> Optional[str]:
         return None
     path = parts.path or "/"
     if path.lower().endswith(_SKIP_EXTENSIONS):
+        return None
+    if page_prefix and not _in_prefix(path, page_prefix):
         return None
     normalized = f"{parts.scheme}://{parts.netloc}{path.rstrip('/') or '/'}"
     if parts.query:
@@ -91,6 +112,7 @@ def score_page_url(
     in_nav: bool = False,
     extra_keywords: Optional[list[str]] = None,
     start_lang: str = "",
+    prefix_depth: int = 0,
 ) -> float:
     parts = urlsplit(url)
     path = parts.path.lower()
@@ -113,8 +135,12 @@ def score_page_url(
             score += weight * 0.8
     if in_nav:
         score += 3
-    if len(segments) > 2:
-        score -= 2 * (len(segments) - 2)
+    # Depth is measured from the crawl's own root. Without the offset a scoped crawl would
+    # penalise every page for the prefix it is required to carry — and since only positive
+    # scores survive, a section two or three segments deep would starve itself.
+    depth = len(segments) - prefix_depth
+    if depth > 2:
+        score -= 2 * (depth - 2)
     if parts.query:
         score -= 1
     # Locale duplicate: /de/rooms when the start page was /en (or unprefixed).
@@ -165,6 +191,7 @@ def _select_pages(
     sitemap_urls: list[str],
     max_pages: int,
     priority_keywords: Optional[list[str]],
+    page_prefix: str = "",
 ) -> list[tuple[str, float]]:
     """Rank discovered internal URLs; returns up to max_pages-1 (url, score) pairs."""
     start_parts = urlsplit(start_url)
@@ -175,12 +202,13 @@ def _select_pages(
         if start_segments and len(start_segments[0]) == 2 and start_segments[0].isalpha()
         else ""
     )
-    start_norm = _normalize_link(start_url, start_host)
+    start_norm = _normalize_link(start_url, start_host, page_prefix)
+    prefix_depth = len([s for s in (page_prefix or "").split("/") if s])
 
     # Anchor links carry text + nav signals; sitemap URLs score on URL alone.
     candidates: dict[str, tuple[str, bool]] = {}
     for link in links:
-        url = _normalize_link(link.get("href") or "", start_host)
+        url = _normalize_link(link.get("href") or "", start_host, page_prefix)
         if not url or url == start_norm:
             continue
         prev = candidates.get(url)
@@ -191,12 +219,12 @@ def _select_pages(
         else:
             candidates[url] = (prev[0] or text, prev[1] or in_nav)
     for raw in sitemap_urls:
-        url = _normalize_link(raw, start_host)
+        url = _normalize_link(raw, start_host, page_prefix)
         if url and url != start_norm and url not in candidates:
             candidates[url] = ("", False)
 
     scored = [
-        (url, score_page_url(url, text, in_nav, priority_keywords, start_lang))
+        (url, score_page_url(url, text, in_nav, priority_keywords, start_lang, prefix_depth))
         for url, (text, in_nav) in candidates.items()
     ]
     ranked = sorted(
@@ -217,9 +245,11 @@ async def crawl_images(
     priority_keywords: Optional[list[str]] = None,
     include_screenshots: bool = False,
     use_sitemap: bool = True,
+    page_prefix: Optional[str] = None,
     time_budget_ms: Optional[int] = None,
 ) -> dict:
     max_pages = max_pages or settings.crawl_max_pages
+    page_prefix = (page_prefix or "").rstrip("/")
     time_budget_ms = time_budget_ms or settings.crawl_time_budget_ms
     start_ts = time.time()
 
@@ -306,10 +336,13 @@ async def crawl_images(
             parts = urlsplit(url)
             sitemap_urls = await _fetch_sitemap_urls(context, f"{parts.scheme}://{parts.netloc}")
             sitemap_used = bool(sitemap_urls)
-        selected = _select_pages(url, links, sitemap_urls, max_pages, priority_keywords)
+        selected = _select_pages(
+            url, links, sitemap_urls, max_pages, priority_keywords, page_prefix
+        )
         logger.info(
-            "Crawl %s: discovered %d links, %d sitemap urls; visiting %d pages",
+            "Crawl %s: discovered %d links, %d sitemap urls; visiting %d pages%s",
             url, len(links), len(sitemap_urls), len(selected),
+            f" (scoped to {page_prefix})" if page_prefix else "",
         )
 
         # --- sequential visits, budget-checked between pages ----------------------

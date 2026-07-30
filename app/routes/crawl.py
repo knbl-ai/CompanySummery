@@ -37,6 +37,7 @@ async def crawl_images_endpoint(request: Request, body: CrawlRequest):
             priority_keywords=opts.priorityKeywords,
             include_screenshots=opts.includeScreenshots,
             use_sitemap=opts.useSitemap,
+            page_prefix=opts.pagePrefix,
             time_budget_ms=opts.timeBudgetMs,
         )
     except Exception as e:

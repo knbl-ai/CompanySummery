@@ -57,6 +57,11 @@ class CrawlOptions(BaseModel):
     priorityKeywords: Optional[list[str]] = None
     includeScreenshots: bool = False
     useSitemap: bool = True
+    # Bounds the crawl to one section of the host ("/en-us/barcelo-budapest"). Host-only
+    # discovery is right when the host IS the subject, and wrong when one host carries a page
+    # per subject — a hotel chain serves every property off one domain, so an unbounded crawl
+    # from one property's page files its siblings' photographs as that property's.
+    pagePrefix: Optional[str] = None
     timeBudgetMs: int = Field(default=240000, ge=30000, le=280000)
 
 
