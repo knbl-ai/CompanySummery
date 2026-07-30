@@ -44,9 +44,11 @@ Express Request Timeout (90s)
 
 ### Local Development
 
-1. **Install dependencies**:
+1. **Install dependencies** (Python 3.10+):
 ```bash
-npm install
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+./.venv/bin/patchright install chromium
 ```
 
 2. **Create `.env` file** in the root directory:
@@ -81,10 +83,23 @@ SCREENSHOT_POST_LOAD_DELAY=5000
 
 3. **Start development server**:
 ```bash
-npm run dev
+./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-The server will start on `http://localhost:8080`.
+The server will start on `http://localhost:8080`. Invoke it as `python -m uvicorn` rather than
+`./.venv/bin/uvicorn`: if the checkout has ever been moved, the generated console scripts still
+carry the absolute shebang from the old path and fail with `bad interpreter`.
+
+### Tests
+
+```bash
+./.venv/bin/pip install -r requirements-dev.txt
+./.venv/bin/python -m pytest tests/ -q
+```
+
+`tests/test_crawl_selection.py` covers the crawl's page-selection judgement — which links become
+candidates, how they are ranked, and how `pagePrefix` bounds a crawl to one section of a shared
+host. All pure functions, no browser, so the suite runs in well under a second.
 
 ## API Documentation
 

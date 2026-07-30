@@ -10,3 +10,5 @@ Dockerfile
 .venv
 .mypy_cache
 .pytest_cache
+tests
+requirements-dev.txt
