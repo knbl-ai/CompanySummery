@@ -69,13 +69,20 @@ def _norm_host(host: str) -> str:
 def _in_prefix(path: str, prefix: str) -> bool:
     """Is a page path inside the crawl's section?
 
-    Segment-boundary match, so `/barcelo-budapest` owns `/barcelo-budapest/rooms` but not
-    `/barcelo-budapest-spa-partners`."""
+    `/` and `-` are both section boundaries: `/barcelo-budapest` owns `/barcelo-budapest/rooms`
+    AND `/barcelo-budapest-rooms`. Sites put a property's pages under either — chains that nest
+    (barcelo.com) and chains that don't (playhotels.com) are equally common — and matching only
+    `/` bounded a flat site's crawl to the single page it started on: one page, one usable photo.
+
+    A sibling property is still refused, which is the point of the bound:
+    `/barcelo-praha-rooms` does not extend `/barcelo-budapest`. The caller sends a prefix already
+    trimmed to the property's own name, never to a fragment of it, so widening to `-` cannot
+    reach past the property."""
     path = (path or "").rstrip("/")
     prefix = (prefix or "").rstrip("/")
     if not prefix:
         return True
-    return path == prefix or path.startswith(prefix + "/")
+    return path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "-")
 
 
 def _normalize_link(href: str, start_host: str, page_prefix: str = "") -> Optional[str]:

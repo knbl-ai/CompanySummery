@@ -38,13 +38,19 @@ def link(href, text="", nav=False):
     ("/en-us/barcelo-budapest/", True),
     ("/en-us/barcelo-budapest/rooms", True),
     ("/en-us/barcelo-budapest/dining/restaurant", True),
-    # A sibling whose path merely STARTS with the same characters is a different property.
-    ("/en-us/barcelo-budapest-partners", False),
+    # A hyphen is a boundary too: a FLAT site hangs the property's pages beside it, not under
+    # it. Matching only "/" bounded such a crawl to its single start page.
+    ("/en-us/barcelo-budapest-rooms", True),
+    ("/en-us/barcelo-budapest-partners", True),
+    # A different property is still refused — that is what the bound is for. The prefix always
+    # names a whole property, never a fragment of one, so "-" cannot reach past it.
     ("/en-us/barcelo-praha", False),
+    ("/en-us/barcelo-praha-rooms", False),
+    ("/en-us/barcelo", False),
     ("/en-us", False),
     ("/", False),
 ])
-def test_the_section_boundary_is_a_path_segment(path, inside):
+def test_a_section_ends_at_a_slash_or_a_hyphen(path, inside):
     assert _in_prefix(path, BUDAPEST) is inside
 
 
@@ -79,6 +85,20 @@ def test_a_prefix_filters_pages_and_sitemap_entries_alike():
     assert _normalize_link(f"{BARCELO}rooms", "barcelo.com", BUDAPEST) is not None
     assert _normalize_link(
         "https://www.barcelo.com/en-us/barcelo-praha/rooms", "barcelo.com", BUDAPEST
+    ) is None
+
+
+def test_a_flat_sites_pages_reach_discovery_too():
+    """The property's pages sit beside it on a flat host. Rejecting them here is what left one
+    live crawl with a single page to visit."""
+    flat = "/play-theatrou-athens"
+    for href in (
+        "https://www.playhotels.com/play-theatrou-athens-rooms",
+        "https://www.playhotels.com/play-theatrou-athens-gallery",
+    ):
+        assert _normalize_link(href, "playhotels.com", flat) is not None, href
+    assert _normalize_link(
+        "https://www.playhotels.com/play-acropolis-athens-rooms", "playhotels.com", flat
     ) is None
 
 
