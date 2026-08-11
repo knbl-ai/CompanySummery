@@ -33,7 +33,7 @@ async def screenshot(request: Request, body: ScreenshotRequest):
             logger.warning("Retrying screenshot for %s (attempt %d/%d)...", body.url, attempt + 1, _MAX_ATTEMPTS)
             await asyncio.sleep(_RETRY_BACKOFF_S)
         try:
-            buffer = await capture_screenshot(
+            capture = await capture_screenshot(
                 url=body.url,
                 full_page=body.fullPage,
                 fmt=body.format,
@@ -56,13 +56,16 @@ async def screenshot(request: Request, body: ScreenshotRequest):
         logger.exception("Screenshot error for %s", body.url)
         return JSONResponse(status_code=500, content={"error": str(last_exc), "retryable": False})
 
-    upload_result = await storage_service.upload_screenshot(buffer, fmt=body.format)
+    upload_result = await storage_service.upload_screenshot(capture.image, fmt=body.format)
 
     processing_time = int((time.time() - start) * 1000)
 
     return {
         "success": True,
         "screenshotUrl": upload_result["url"],
+        # The rendered text of the same page load. For a bot-protected site this is the
+        # caller's only first-party evidence — without it they are left with web search.
+        "pageText": capture.text or None,
         "metadata": {
             "url": body.url,
             "fileName": upload_result["fileName"],

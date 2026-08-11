@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 
 from app.config import settings
 from app.services.browser_pool import browser_pool
@@ -12,6 +13,33 @@ from app.services.page_prep import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on returned page text. Consumers truncate far below this for synthesis;
+# the cap exists so a pathological page can't bloat the JSON response.
+_MAX_PAGE_TEXT_CHARS = 20000
+
+# The rendered text of the page, read at capture time. This browser is the only leg of
+# the analysis that gets past a JS challenge (Cloudflare et al.), so for a bot-protected
+# site it is the ONLY first-party evidence there is — everything else the caller can
+# reach is a web search, i.e. somebody else's account of the company. Runs after the
+# scroll and image waits so it reflects what the screenshot actually shows.
+PAGE_TEXT_JS = """() => {
+    const body = document.body;
+    if (!body) return '';
+    // innerText (not textContent) so it follows what is VISIBLE — hidden menus,
+    // aria-hidden slides and display:none tabs stay out of the company profile.
+    const text = body.innerText || '';
+    return text.replace(/[ \\t]+/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim();
+}"""
+
+
+@dataclass
+class CaptureResult:
+    """A capture is an image AND what the page said — both come from the one page load."""
+
+    image: bytes
+    text: str = ""
+
 
 # SPA-aware content readiness check. Counts CSS background-images alongside <img>
 # and text — image-led sites (hotels, portfolios) often paint their hero entirely
@@ -70,10 +98,10 @@ async def capture_screenshot(
     fmt: str = "png",
     quality: int = 90,
     delay: int = 0,
-) -> bytes:
+) -> CaptureResult:
     overall_timeout = settings.screenshot_operation_timeout / 1000
 
-    async def _do_capture() -> bytes:
+    async def _do_capture() -> CaptureResult:
         context = await browser_pool.acquire_context()
         try:
             page = await context.new_page()
@@ -159,7 +187,19 @@ async def capture_screenshot(
             )
 
             logger.info("Screenshot captured (%d bytes)", len(buffer))
-            return buffer
+
+            # Best-effort: a page that renders but refuses evaluation still yields its
+            # screenshot. Text is an addition to the capture, never a condition of it.
+            try:
+                page_text = await page.evaluate(PAGE_TEXT_JS)
+            except Exception as e:
+                logger.warning("Page text extraction failed for %s: %s", url, e)
+                page_text = ""
+            if page_text and len(page_text) > _MAX_PAGE_TEXT_CHARS:
+                page_text = page_text[:_MAX_PAGE_TEXT_CHARS]
+            logger.info("Page text extracted (%d chars)", len(page_text or ""))
+
+            return CaptureResult(image=buffer, text=page_text or "")
         finally:
             await browser_pool.release_context(context)
 
