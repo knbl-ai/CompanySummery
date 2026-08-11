@@ -17,6 +17,9 @@ class ScreenshotMetadata(BaseModel):
 class ScreenshotResponse(BaseModel):
     success: bool
     screenshotUrl: str
+    # Rendered visible text of the captured page. Optional so a client reading an older
+    # deployment (before this field existed) degrades instead of failing.
+    pageText: Optional[str] = None
     metadata: ScreenshotMetadata
 
 
