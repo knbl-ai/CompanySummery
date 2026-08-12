@@ -391,8 +391,12 @@ async def prepare_and_extract(
 
     await page.evaluate(WAIT_FOR_IMAGES_JS)
 
-    # Post-load delay
-    post_load = settings.screenshot_post_load_delay
+    # Post-load delay. Its own setting, not the screenshot's: everything above has already
+    # run — two `networkidle` waits, the full auto-scroll, wait-for-images — so this is the
+    # margin for a DOM that is still mutating after all of that, not the settling time a
+    # photograph needs. Borrowing the screenshot's 5s spent 40 seconds asleep across an
+    # 8-page crawl.
+    post_load = settings.extraction_post_load_delay
     if post_load > 0:
         safe_delay = min(post_load, 10000)
         logger.info("Waiting %dms for dynamic content...", safe_delay)

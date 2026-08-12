@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     image_min_width: int = 100
     image_min_height: int = 100
     image_include_backgrounds: bool = False
+    # Extraction settles differently from a capture. A screenshot is a photograph — a
+    # late-arriving hero or a font swap shows in it, so standing still is worth paying for.
+    # An extraction only reads the DOM, and by the time it runs the page has already been
+    # through two `networkidle` waits, a full auto-scroll and a wait-for-images. Inheriting
+    # the screenshot's 5s cost 40 seconds of pure sleeping across an 8-page crawl — 17% of
+    # it — waiting on a DOM that had stopped changing.
+    extraction_post_load_delay: int = 1000
 
     # Site crawl (milliseconds)
     crawl_max_pages: int = 8

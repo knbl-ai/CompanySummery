@@ -181,8 +181,13 @@ async def _fetch_sitemap_urls(context, origin: str) -> list[str]:
         return []
     urls: list[str] = []
     if root.tag.endswith("sitemapindex"):
-        for child_url in _locs(root, "loc")[:_SITEMAP_MAX_CHILDREN]:
-            child = await _fetch_xml(child_url)
+        # Independent documents on one host. Fetched one after another their 5s timeouts
+        # stack into 15s of a budget that has page visits waiting behind it. Gathered in
+        # index order, so the resulting URL list is identical to the serial version's.
+        children = await asyncio.gather(
+            *(_fetch_xml(u) for u in _locs(root, "loc")[:_SITEMAP_MAX_CHILDREN])
+        )
+        for child in children:
             if child is not None:
                 urls.extend(_locs(child, "loc"))
             if len(urls) >= _SITEMAP_MAX_URLS:
@@ -317,6 +322,19 @@ async def crawl_images(
 
     context = await browser_pool.acquire_context()
     try:
+        # The sitemap needs the host and nothing else — not page 1's links, not even
+        # whether page 1 loaded — so it has no reason to wait for it. Run serially it was
+        # up to 20s (four documents at a 5s timeout) of a budget with page visits queued
+        # behind it, spent in the gap between rendering the start page and rendering the
+        # rest. Started here it costs whatever exceeds page 1's own duration, which on
+        # every site measured so far is nothing at all.
+        sitemap_task: Optional[asyncio.Task] = None
+        if use_sitemap:
+            parts = urlsplit(url)
+            sitemap_task = asyncio.create_task(
+                _fetch_sitemap_urls(context, f"{parts.scheme}://{parts.netloc}")
+            )
+
         # --- page 1: start URL (one retry — its failure fails the whole crawl) ----
         links: list[dict] = []
         start_entry: Optional[dict[str, Any]] = None
@@ -333,15 +351,19 @@ async def crawl_images(
                 logger.warning("Start page %s failed (%s), retrying once...", url, start_entry["status"])
         pages.append(start_entry)
         if start_entry["status"] != "ok":
+            # The context is about to be torn down under us; a sitemap fetch still in
+            # flight would fail into the void and be reported as an unretrieved exception
+            # on a crawl that ended for an entirely different, well-reported reason.
+            if sitemap_task is not None:
+                sitemap_task.cancel()
             raise RuntimeError(
                 f"Start page failed: {start_entry.get('error') or start_entry['status']}"
             )
 
         # --- discovery + selection ------------------------------------------------
         sitemap_urls: list[str] = []
-        if use_sitemap:
-            parts = urlsplit(url)
-            sitemap_urls = await _fetch_sitemap_urls(context, f"{parts.scheme}://{parts.netloc}")
+        if sitemap_task is not None:
+            sitemap_urls = await sitemap_task
             sitemap_used = bool(sitemap_urls)
         selected = _select_pages(
             url, links, sitemap_urls, max_pages, priority_keywords, page_prefix
