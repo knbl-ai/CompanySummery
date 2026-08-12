@@ -129,6 +129,10 @@ async def capture_screenshot(
 
     async def _do_capture() -> CaptureResult:
         context = await browser_pool.acquire_context()
+        # Through the page bound like every other render — see `acquire_page_slot`. Taken
+        # after the context, as everywhere, so the two are always acquired in one order.
+        # One page for the whole call, so the slot is held for the call rather than a block.
+        await browser_pool.acquire_page_slot()
         try:
             page = await context.new_page()
 
@@ -246,6 +250,7 @@ async def capture_screenshot(
 
             return CaptureResult(image=buffer, text=page_text or "", blank=blank)
         finally:
+            browser_pool.release_page_slot()
             await browser_pool.release_context(context)
 
     start = time.time()

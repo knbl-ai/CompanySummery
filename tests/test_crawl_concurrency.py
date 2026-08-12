@@ -231,6 +231,21 @@ class TestTheHarvestDoesNotDependOnWhoFinishesFirst:
         assert srcs[0].startswith(DISCOVERED[0]), f"the top-ranked page lost its place: {srcs}"
 
     @pytest.mark.asyncio
+    async def test_the_cap_still_holds_when_pages_overrun_it(self, monkeypatch):
+        """The sequential version stopped visiting once `max_images` was full; this one
+        cannot, because the running total is not known until the merge. What must not
+        change is the RESULT — the cap is enforced at the merge, so a crawl that renders
+        more than it needed still returns exactly what it was asked for."""
+        _harness(
+            monkeypatch,
+            images={u: [_img(f"{u}/{n}.jpg") for n in range(10)] for u in DISCOVERED},
+        )
+
+        result = await _crawl(max_images=5)
+
+        assert len(result["images"]) == 5
+
+    @pytest.mark.asyncio
     async def test_pages_are_reported_in_rank_order(self, monkeypatch):
         _harness(
             monkeypatch,
@@ -329,6 +344,38 @@ class TestTheMemoryBoundIsGlobal:
         from app.services.browser_pool import browser_pool
 
         assert hasattr(browser_pool, "page_slot")
+
+    @pytest.mark.parametrize("module", ["screenshot_service", "image_extraction_service"])
+    def test_every_render_path_takes_the_bound(self, module):
+        """The crawl is not the only thing that renders. A path that opens a page without
+        the slot is invisible to the crawls sharing the instance, and the ceiling stops
+        describing the instance — which is the only thing it exists to describe."""
+        import importlib
+
+        mod = importlib.import_module(f"app.services.{module}")
+        body = mod.__loader__.get_source(mod.__name__)
+
+        assert "new_page()" in body, f"{module} no longer opens a page — update this test"
+        assert "page_slot" in body, (
+            f"{module} opens a page outside the global bound"
+        )
+
+    def test_the_slot_is_always_taken_after_the_context(self):
+        """Two locks, one order, everywhere. Reversed in one place they would be a pair of
+        callers each holding half of what the other is waiting for."""
+        import importlib
+
+        for module in ("screenshot_service", "image_extraction_service", "crawl_service"):
+            mod = importlib.import_module(f"app.services.{module}")
+            body = mod.__loader__.get_source(mod.__name__)
+            ctx = body.index("acquire_context()")
+            slot = min(
+                (body.index(m) for m in ("acquire_page_slot()", "page_slot():") if m in body),
+                default=None,
+            )
+            assert slot is not None and ctx < slot, (
+                f"{module} takes the page slot before the context"
+            )
 
     def test_the_page_bound_is_configured_separately_from_contexts(self):
         from app.config import settings

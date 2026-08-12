@@ -421,6 +421,14 @@ async def crawl_images(
                     finally:
                         await page.close()
 
+        # One thing the sequential version could do that this cannot: stop early once
+        # `max_images` was already full, because it knew the running total between pages.
+        # Deferring the merge is what buys a harvest that does not depend on load order,
+        # and the running total is the price — by the time it could be known here, the
+        # pages are already rendering. It costs no wall-clock, since the extra pages
+        # overlap the ones we wanted, and it cannot change the result, since the merge
+        # still caps at `max_images`. It spends some browser time on a site whose gallery
+        # fills the cap early, bounded by `max_pages`.
         runnable = [
             (page_url, score)
             for page_url, score in selected

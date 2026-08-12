@@ -445,15 +445,19 @@ async def extract_images(
     async def _do_extract() -> dict:
         context = await browser_pool.acquire_context()
         try:
-            page = await context.new_page()
-            return await prepare_and_extract(
-                page,
-                url,
-                min_width=min_width,
-                min_height=min_height,
-                max_images=max_images,
-                include_backgrounds=include_backgrounds,
-            )
+            # Through the page bound like every other render. It is the instance's memory
+            # ceiling, so a path that opts out is invisible to the crawls it shares the
+            # box with — and the ceiling stops describing anything.
+            async with browser_pool.page_slot():
+                page = await context.new_page()
+                return await prepare_and_extract(
+                    page,
+                    url,
+                    min_width=min_width,
+                    min_height=min_height,
+                    max_images=max_images,
+                    include_backgrounds=include_backgrounds,
+                )
         finally:
             await browser_pool.release_context(context)
 

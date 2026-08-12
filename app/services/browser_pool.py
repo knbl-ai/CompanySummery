@@ -35,8 +35,7 @@ class BrowserPool:
             settings.max_concurrent_pages,
         )
 
-    @asynccontextmanager
-    async def page_slot(self):
+    async def acquire_page_slot(self) -> None:
         """Permission to have one more page RENDERED at this moment, process-wide.
 
         A rendered page is the unit that actually consumes memory, and until a crawl
@@ -44,13 +43,27 @@ class BrowserPool:
         pages were the same count. They are not any more. Per-crawl concurrency multiplies
         with pool concurrency — three contexts each rendering three pages is nine — so a
         limit expressed per crawl bounds nothing that matters on a 4Gi instance. This one
-        is global because the memory is.
+        is global because the memory is, and EVERY render takes it: a path that opts out
+        is invisible to the ones it shares the instance with, and then the ceiling stops
+        describing anything.
+
+        Acquired after a context, never before, so the two are always taken in the same
+        order and no two callers can hold half of what the other needs.
         """
         await self._page_semaphore.acquire()
+
+    def release_page_slot(self) -> None:
+        self._page_semaphore.release()
+
+    @asynccontextmanager
+    async def page_slot(self):
+        """`acquire_page_slot` as a context manager, for the callers whose page lifetime
+        is a block rather than the whole function."""
+        await self.acquire_page_slot()
         try:
             yield
         finally:
-            self._page_semaphore.release()
+            self.release_page_slot()
 
     async def _launch_browser(self) -> None:
         self._browser = await self._playwright.chromium.launch(
