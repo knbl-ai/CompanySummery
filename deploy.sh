@@ -36,7 +36,19 @@ IMAGE_INCLUDE_BACKGROUNDS=$IMAGE_INCLUDE_BACKGROUNDS,\
 CRAWL_MAX_PAGES=${CRAWL_MAX_PAGES:-8},\
 CRAWL_TIME_BUDGET_MS=${CRAWL_TIME_BUDGET_MS:-240000},\
 CRAWL_PAGE_TIMEOUT_MS=${CRAWL_PAGE_TIMEOUT_MS:-45000},\
-CRAWL_MIN_REMAINING_MS=${CRAWL_MIN_REMAINING_MS:-20000}"
+CRAWL_MIN_REMAINING_MS=${CRAWL_MIN_REMAINING_MS:-20000},\
+EXTRACTION_POST_LOAD_DELAY=${EXTRACTION_POST_LOAD_DELAY:-1000},\
+MAX_CONCURRENT_PAGES=${MAX_CONCURRENT_PAGES:-6},\
+CRAWL_PAGE_CONCURRENCY=${CRAWL_PAGE_CONCURRENCY:-3}"
+
+# The three above are set explicitly rather than left to their code defaults so both
+# behaviour changes can be undone on a running revision, without building anything:
+#
+#   gcloud run services update company-analyzer --region us-central1 \
+#     --update-env-vars CRAWL_PAGE_CONCURRENCY=1,EXTRACTION_POST_LOAD_DELAY=5000
+#
+# That is sequential page visits and the old settle time — the state this service was in
+# before 2026-08-12 — reachable in one command if the concurrent crawl misbehaves.
 
 echo "Starting deployment process..."
 
@@ -57,14 +69,24 @@ echo "Pushing image to GCR..."
 docker push $IMAGE_NAME
 
 # Deploy to Cloud Run
+#
+# 4 vCPU / 8Gi, up from 2 / 4Gi. A crawl used to render one page at a time, so the
+# instance never held more than one page per context — the context limit bounded memory by
+# accident. It now renders up to `MAX_CONCURRENT_PAGES` (6), and rendering is the part of
+# a page visit that actually wants CPU.
+#
+# Roughly cost-neutral rather than an increase: the crawl measured 229s before and ~111s
+# after, so the doubled rate is spent over about half the time. Memory is the cheaper half
+# of the bill and OOM is the failure mode that kills the container rather than slowing it,
+# so it gets the headroom.
 echo "Deploying to Cloud Run..."
 gcloud run deploy $SERVICE_NAME \
   --image $IMAGE_NAME \
   --platform managed \
   --region $REGION \
   --allow-unauthenticated \
-  --memory 4Gi \
-  --cpu 2 \
+  --memory 8Gi \
+  --cpu 4 \
   --timeout 300 \
   --port 8080 \
   --max-instances 10 \
