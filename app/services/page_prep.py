@@ -6,7 +6,9 @@ Two capture-quality problems this module solves:
    `overflow: hidden` on <body>, which silently breaks both auto-scroll and
    full-page capture. `dismiss_consent` clicks the accept button when it can
    (so the choice persists in the browser context across pages) and falls back
-   to CSS-hiding known containers + restoring scroll.
+   to CSS-hiding known containers + restoring scroll. Substring matching for
+   unknown banners runs through `CONSENT_HIDE_WILDCARD_JS`, never the CSS —
+   see the comment there for the page it blanked when it did.
 
 2. Scroll-reveal animation frameworks (AOS, WOW, ScrollReveal, sal.js, …) keep
    elements at `opacity: 0` until they enter the viewport. A headless capture
@@ -61,13 +63,47 @@ CONSENT_HIDE_CSS = """
 #onetrust-consent-sdk, #didomi-host, .qc-cmp2-container,
 #cmplz-cookiebanner-container, .cky-consent-container, .osano-cm-window,
 .cc-window, #cookie-notice, #cookie-law-info-bar,
-.cookie-banner, [id*="cookie-banner" i], [class*="cookie-consent" i] {
+.cookie-banner {
     display: none !important;
 }
 html, body {
     overflow: auto !important;
 }
 """
+
+# The substring selectors used to live in the CSS above, and one of them cost us every
+# capture of an Enfold WordPress site (zhg.co.il, 2026-08-12). Its document root carries
+# `class="... av-cookies-no-cookie-consent ..."` — a flag meaning the page needs NO consent
+# banner — and `[class*="cookie-consent" i]` matched it. `display: none` on <html> blanks
+# the whole document: a valid JPEG, correct dimensions, 2,073,600 identical white pixels.
+#
+# Nothing noticed, because the page still answered every question we asked it. `innerText`
+# on an element that is not being rendered falls back to `textContent` per spec, so text
+# extraction returned the full 20,000 characters off a page that drew nothing — and the
+# vision model downstream, handed an empty frame and a domain name, invented a brand.
+#
+# Substring matching earns its place: it catches banners no list of IDs will. So it stays,
+# behind a guard. Never the root, never the body, and never an element that contains the
+# site's own landmarks — a consent banner does not wrap your header, nav and main content.
+CONSENT_HIDE_WILDCARD_JS = """() => {
+    const WILDCARD = '[id*="cookie-banner" i], [class*="cookie-consent" i]';
+    const LANDMARKS = 'main, #main, header, footer, nav, [role="main"], #wrap_all, #page';
+    const hidden = [];
+    let candidates = [];
+    try {
+        candidates = Array.from(document.querySelectorAll(WILDCARD));
+    } catch (e) {
+        return hidden;
+    }
+    const landmarks = Array.from(document.querySelectorAll(LANDMARKS));
+    for (const el of candidates) {
+        if (el === document.documentElement || el === document.body) continue;
+        if (landmarks.some(l => el !== l && el.contains(l))) continue;
+        el.style.setProperty('display', 'none', 'important');
+        hidden.push(`${el.tagName}#${el.id || '-'}.${(el.className || '').toString().slice(0, 40)}`);
+    }
+    return hidden;
+}"""
 
 REVEAL_NEUTRALIZE_CSS = """
 [data-aos], [data-aos] *, .aos-init, .aos-animate,
@@ -131,6 +167,12 @@ async def dismiss_consent(page) -> bool:
         await page.add_style_tag(content=CONSENT_HIDE_CSS)
     except Exception as e:
         logger.debug("Consent hide CSS injection failed: %s", e)
+    try:
+        hidden = await page.evaluate(CONSENT_HIDE_WILDCARD_JS)
+        if hidden:
+            logger.info("Consent containers hidden by substring match: %s", ", ".join(hidden))
+    except Exception as e:
+        logger.debug("Consent wildcard hide failed: %s", e)
     return bool(clicked)
 
 
