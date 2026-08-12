@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from app.config import settings
 from app.services.browser_pool import browser_pool
+from app.services.capture_quality import flatness_is_blank, measure_flatness
 from app.services.page_prep import (
     AUTO_SCROLL_JS,
     WAIT_FOR_IMAGES_JS,
@@ -13,6 +14,10 @@ from app.services.page_prep import (
 )
 
 logger = logging.getLogger(__name__)
+
+# How long to let the page sit before taking a second frame, when the first one came back
+# empty. The page is already loaded by this point, so this buys settling time, not a reload.
+_BLANK_RETRY_DELAY_S = 3.0
 
 # Upper bound on returned page text. Consumers truncate far below this for synthesis;
 # the cap exists so a pathological page can't bloat the JSON response.
@@ -39,6 +44,27 @@ class CaptureResult:
 
     image: bytes
     text: str = ""
+    # True when the image carries no page at all. Reported rather than raised: the text
+    # from this same load is the caller's first-party evidence about the company, and on a
+    # bot-protected site it is the ONLY such evidence. Failing the capture to punish the
+    # image would throw that away too.
+    blank: bool = False
+
+
+async def _capture_is_blank(image_bytes: bytes, url: str) -> bool:
+    """Measure the frame we are about to hand back, off the event loop.
+
+    Decoding is CPU-bound and full-page captures reach 1920x11441; this service runs
+    several captures concurrently, so doing it inline would stall the others.
+    """
+    stats = await asyncio.to_thread(measure_flatness, image_bytes)
+    if stats is None or not flatness_is_blank(stats):
+        return False
+    logger.warning(
+        "Capture for %s carries no image: %d bytes, stddev=%.2f, %.1f%% of pixels one tone",
+        url, len(image_bytes), stats[0], stats[1] * 100,
+    )
+    return True
 
 
 # SPA-aware content readiness check. Counts CSS background-images alongside <img>
@@ -180,13 +206,32 @@ async def capture_screenshot(
             if fmt in ("jpeg", "webp"):
                 screenshot_opts["quality"] = quality
 
-            logger.info("Capturing screenshot (timeout: %dms)...", capture_timeout_ms)
-            buffer = await asyncio.wait_for(
-                page.screenshot(**screenshot_opts),
-                timeout=capture_timeout_ms / 1000,
-            )
+            async def _grab() -> bytes:
+                return await asyncio.wait_for(
+                    page.screenshot(**screenshot_opts),
+                    timeout=capture_timeout_ms / 1000,
+                )
 
+            logger.info("Capturing screenshot (timeout: %dms)...", capture_timeout_ms)
+            buffer = await _grab()
             logger.info("Screenshot captured (%d bytes)", len(buffer))
+
+            blank = await _capture_is_blank(buffer, url)
+            if blank:
+                # One more frame of a page that is, by every other measure, ready — so this
+                # costs a capture, not a page load. The empty frame does not reproduce
+                # outside this runtime, so a second look is the cheapest thing that might
+                # work; the flag is what makes the answer honest when it doesn't.
+                logger.warning(
+                    "Blank capture for %s — settling %.1fs and capturing again", url, _BLANK_RETRY_DELAY_S
+                )
+                await neutralize_animations(page)
+                await asyncio.sleep(_BLANK_RETRY_DELAY_S)
+                buffer = await _grab()
+                blank = await _capture_is_blank(buffer, url)
+                logger.info(
+                    "Second capture for %s: %d bytes, blank=%s", url, len(buffer), blank
+                )
 
             # Best-effort: a page that renders but refuses evaluation still yields its
             # screenshot. Text is an addition to the capture, never a condition of it.
@@ -199,7 +244,7 @@ async def capture_screenshot(
                 page_text = page_text[:_MAX_PAGE_TEXT_CHARS]
             logger.info("Page text extracted (%d chars)", len(page_text or ""))
 
-            return CaptureResult(image=buffer, text=page_text or "")
+            return CaptureResult(image=buffer, text=page_text or "", blank=blank)
         finally:
             await browser_pool.release_context(context)
 
