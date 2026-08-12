@@ -285,11 +285,20 @@ async def crawl_images(
             fresh += 1
         return fresh
 
-    async def _visit(page, page_url: str, score: float) -> dict[str, Any]:
+    async def _visit(page, page_url: str, score: float) -> tuple[dict[str, Any], list[dict]]:
+        """Render one page and return its entry plus the images it yielded.
+
+        The images are RETURNED rather than merged here. Merging is what decides which
+        page owns a shared `src` and which images survive `max_images`, and doing it as
+        each visit finishes would hand those decisions to whichever page happened to load
+        first. The caller merges in rank order instead, so the harvest is the same set
+        whether the pages ran one at a time or all at once.
+        """
         entry: dict[str, Any] = {
             "url": page_url, "status": "ok", "imagesFound": 0,
             "durationMs": 0, "score": score, "screenshotUrl": None, "error": None,
         }
+        images: list[dict] = []
         page_start = time.time()
         per_page_ms = min(settings.crawl_page_timeout_ms, remaining_ms() - 10000)
         try:
@@ -304,7 +313,7 @@ async def crawl_images(
                 ),
                 timeout=max(per_page_ms, 5000) / 1000,
             )
-            entry["imagesFound"] = _merge_images(page_url, result["images"])
+            images = result["images"]
             if include_screenshots:
                 try:
                     buffer = await page.screenshot(type="jpeg", quality=70, full_page=False)
@@ -318,7 +327,7 @@ async def crawl_images(
             entry["status"] = "error"
             entry["error"] = str(e)[:200]
         entry["durationMs"] = int((time.time() - page_start) * 1000)
-        return entry
+        return entry, images
 
     context = await browser_pool.acquire_context()
     try:
@@ -339,14 +348,16 @@ async def crawl_images(
         links: list[dict] = []
         start_entry: Optional[dict[str, Any]] = None
         for attempt in (1, 2):
-            page = await context.new_page()
-            try:
-                start_entry = await _visit(page, url, score=0)
-                if start_entry["status"] == "ok":
-                    links = await page.evaluate(COLLECT_LINKS_JS)
-                    break
-            finally:
-                await page.close()
+            async with browser_pool.page_slot():
+                page = await context.new_page()
+                try:
+                    start_entry, start_images = await _visit(page, url, score=0)
+                    if start_entry["status"] == "ok":
+                        links = await page.evaluate(COLLECT_LINKS_JS)
+                        start_entry["imagesFound"] = _merge_images(url, start_images)
+                        break
+                finally:
+                    await page.close()
             if attempt == 1 and start_entry and start_entry["status"] != "ok":
                 logger.warning("Start page %s failed (%s), retrying once...", url, start_entry["status"])
         pages.append(start_entry)
@@ -374,26 +385,71 @@ async def crawl_images(
             f" (scoped to {page_prefix})" if page_prefix else "",
         )
 
-        # --- sequential visits, budget-checked between pages ----------------------
-        for page_url, score in selected:
+        # --- concurrent visits, budget-checked as each one starts -----------------
+        #
+        # These pages were visited one at a time until the timings said what that cost:
+        # seven pages, 130.7 of a 228.8-second crawl, almost none of it computing. A page
+        # visit is mostly waiting — two `networkidle` waits, an auto-scroll on a timer,
+        # image probes over the network — and waiting is the one thing that overlaps for
+        # free. The start page still goes alone, before and by itself: its links ARE the
+        # discovery, and its consent click has to land in the shared context before any
+        # other page opens, or every one of them meets the banner again.
+        #
+        # Fan-out is bounded twice. `crawl_page_concurrency` is this crawl's own appetite;
+        # `browser_pool.page_slot()` is the instance's memory, held globally because three
+        # crawls each rendering three pages is nine pages on one 4Gi box, and no per-crawl
+        # number can see that.
+        fanout = asyncio.Semaphore(max(1, settings.crawl_page_concurrency))
+
+        def _skipped(page_url: str, score: float) -> dict[str, Any]:
+            return {
+                "url": page_url, "status": "skipped_budget", "imagesFound": 0,
+                "durationMs": 0, "score": score, "screenshotUrl": None, "error": None,
+            }
+
+        async def _visit_one(page_url: str, score: float):
+            async with fanout:
+                # Re-checked HERE rather than before launching: a task queued behind the
+                # semaphore may wait out the rest of the budget, and starting a 45-second
+                # render with 5 seconds left spends the whole overrun to produce nothing.
+                if remaining_ms() < settings.crawl_min_remaining_ms:
+                    return _skipped(page_url, score), []
+                async with browser_pool.page_slot():
+                    page = await context.new_page()
+                    try:
+                        return await _visit(page, page_url, score)
+                    finally:
+                        await page.close()
+
+        runnable = [
+            (page_url, score)
+            for page_url, score in selected
             # SSRF defense in depth (discovery is already same-host-only).
-            valid, _reason = validate_url(page_url)
-            if not valid:
-                continue
-            if len(images_by_src) >= max_images:
-                break
-            if remaining_ms() < settings.crawl_min_remaining_ms:
-                partial = True
+            if validate_url(page_url)[0]
+        ]
+        results = await asyncio.gather(
+            *(_visit_one(u, s) for u, s in runnable), return_exceptions=True
+        )
+
+        # Merged in RANK order, not completion order. Which page owns a shared `src`, and
+        # which images survive `max_images`, are decisions this crawl already made when it
+        # ranked the pages — letting the network reorder them would make the same site
+        # return a different harvest run to run.
+        for (page_url, score), outcome in zip(runnable, results):
+            if isinstance(outcome, BaseException):
+                logger.warning("Crawl page %s raised: %s", page_url, outcome)
                 pages.append({
-                    "url": page_url, "status": "skipped_budget", "imagesFound": 0,
-                    "durationMs": 0, "score": score, "screenshotUrl": None, "error": None,
+                    "url": page_url, "status": "error", "imagesFound": 0,
+                    "durationMs": 0, "score": score, "screenshotUrl": None,
+                    "error": str(outcome)[:200],
                 })
                 continue
-            page = await context.new_page()
-            try:
-                pages.append(await _visit(page, page_url, score))
-            finally:
-                await page.close()
+            entry, images = outcome
+            if entry["status"] == "skipped_budget":
+                partial = True
+            else:
+                entry["imagesFound"] = _merge_images(page_url, images)
+            pages.append(entry)
     finally:
         await browser_pool.release_context(context)
 

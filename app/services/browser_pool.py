@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from patchright.async_api import Browser, BrowserContext, async_playwright
 
@@ -22,12 +23,34 @@ class BrowserPool:
         self._playwright = None
         self._browser: Browser | None = None
         self._semaphore = asyncio.Semaphore(settings.screenshot_max_concurrent)
+        self._page_semaphore = asyncio.Semaphore(settings.max_concurrent_pages)
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
         await self._launch_browser()
-        logger.info("Browser pool started (max concurrent contexts: %d)", settings.screenshot_max_concurrent)
+        logger.info(
+            "Browser pool started (max concurrent contexts: %d, max rendered pages: %d)",
+            settings.screenshot_max_concurrent,
+            settings.max_concurrent_pages,
+        )
+
+    @asynccontextmanager
+    async def page_slot(self):
+        """Permission to have one more page RENDERED at this moment, process-wide.
+
+        A rendered page is the unit that actually consumes memory, and until a crawl
+        visited more than one at a time the context limit stood in for it: contexts and
+        pages were the same count. They are not any more. Per-crawl concurrency multiplies
+        with pool concurrency — three contexts each rendering three pages is nine — so a
+        limit expressed per crawl bounds nothing that matters on a 4Gi instance. This one
+        is global because the memory is.
+        """
+        await self._page_semaphore.acquire()
+        try:
+            yield
+        finally:
+            self._page_semaphore.release()
 
     async def _launch_browser(self) -> None:
         self._browser = await self._playwright.chromium.launch(

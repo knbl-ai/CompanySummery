@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     screenshot_max_concurrent: int = 3
     screenshot_post_load_delay: int = 5000
 
+    # Rendered pages allowed at once across the whole process. A page is what holds the
+    # memory, and it used to be the same count as a context — one page per context — so
+    # the context limit above bounded it by accident. Once a crawl renders several at once
+    # the two come apart and per-crawl concurrency multiplies with pool concurrency, so
+    # this has to be global. Sized for 4Gi: browser baseline plus six image-heavy pages.
+    max_concurrent_pages: int = 6
+
     # Proxy (leave empty to disable)
     proxy_url: str = ""
 
@@ -49,6 +56,10 @@ class Settings(BaseSettings):
     crawl_time_budget_ms: int = 240000  # < Cloud Run 300s, leaves serialization headroom
     crawl_page_timeout_ms: int = 45000
     crawl_min_remaining_ms: int = 20000
+    # Pages one crawl renders at once, after the start page. Bounded again by the global
+    # `max_concurrent_pages`, which is the limit that protects the instance; this one just
+    # decides how much of its own share a single crawl will try to take.
+    crawl_page_concurrency: int = 3
 
     # Rate limiting
     rate_limit: str = "100/15minutes"
