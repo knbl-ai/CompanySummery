@@ -2,3 +2,7 @@
 # only that file, doesn't carry a test runner.
 -r requirements.txt
 pytest==8.3.4
+# Without this, every `async def` test is SKIPPED rather than failed — pytest reports them
+# as warnings and still exits 0, so a green run can mean 19 of 86 tests never executed.
+# That is most of the crawl-concurrency and sitemap suites.
+pytest-asyncio==1.4.0

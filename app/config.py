@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     # memory, and it used to be the same count as a context — one page per context — so
     # the context limit above bounded it by accident. Once a crawl renders several at once
     # the two come apart and per-crawl concurrency multiplies with pool concurrency, so
-    # this has to be global. Sized for 4Gi: browser baseline plus six image-heavy pages.
-    max_concurrent_pages: int = 6
+    # this has to be global. Sized for 8Gi: browser baseline plus eight image-heavy pages,
+    # which is one crawl's full fan-out plus a screenshot for the analysis running beside it.
+    max_concurrent_pages: int = 8
 
     # Proxy (leave empty to disable)
     proxy_url: str = ""
@@ -54,12 +55,22 @@ class Settings(BaseSettings):
     # Site crawl (milliseconds)
     crawl_max_pages: int = 8
     crawl_time_budget_ms: int = 240000  # < Cloud Run 300s, leaves serialization headroom
-    crawl_page_timeout_ms: int = 45000
+    # Wraps the whole of `prepare_and_extract` — navigation, the consent click, two
+    # `networkidle` waits, a full auto-scroll and a wait-for-images — not just the
+    # navigation the screenshot path budgets 60s for. At 45s it was the stricter of the
+    # two on strictly more work, and knbl360.com lost a whole crawl to it (both start-page
+    # attempts timed out) on a page the screenshot leg rendered in the same run, well
+    # enough for brand analysis to read four colors off it. Matched to the capture path.
+    crawl_page_timeout_ms: int = 60000
     crawl_min_remaining_ms: int = 20000
-    # Pages one crawl renders at once, after the start page. Bounded again by the global
+    # Pages one crawl renders at once, after the start page. Seven discovered pages went
+    # 3+3+1 at three; six makes it 6+1, and the wave that is left over is the whole saving
+    # — a wave costs its slowest page, not its average. Not seven: that would let a single
+    # crawl hold every page slot on the instance, and the screenshot for the analysis it
+    # belongs to would queue behind its own crawl. Bounded again by the global
     # `max_concurrent_pages`, which is the limit that protects the instance; this one just
     # decides how much of its own share a single crawl will try to take.
-    crawl_page_concurrency: int = 3
+    crawl_page_concurrency: int = 6
 
     # Rate limiting
     rate_limit: str = "100/15minutes"
