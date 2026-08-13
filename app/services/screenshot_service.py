@@ -174,18 +174,37 @@ async def capture_screenshot(
                             content_state.get("ready"), content_state.get("textLen", 0),
                             content_state.get("imgCount", 0))
 
-            # Auto-scroll to trigger lazy loaders
+            # Auto-scroll to trigger lazy loaders.
+            #
+            # These three steps are timed individually because together they are one of
+            # the two big costs of a capture — 27.5s of knbl360.com's 80.6s — and every
+            # one of them is already bounded (the scroll at 15000px/40s, the wait below
+            # at 10s, three seconds per image after that). Which bound is actually being
+            # spent is not something the totals can answer, and guessing wrong here
+            # means trading away lazy-loaded images for nothing.
             logger.info("Scrolling page...")
+            t_scroll = time.monotonic()
             await page.evaluate(AUTO_SCROLL_JS)
+            scroll_ms = int((time.monotonic() - t_scroll) * 1000)
 
             # Wait for network to settle after scrolling
+            t_idle = time.monotonic()
+            idle_reached = True
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
-                pass
+                idle_reached = False
+            idle_ms = int((time.monotonic() - t_idle) * 1000)
 
             # Wait for images to finish loading
+            t_images = time.monotonic()
             await page.evaluate(WAIT_FOR_IMAGES_JS)
+            images_ms = int((time.monotonic() - t_images) * 1000)
+
+            logger.info(
+                "Settle: scroll=%dms, networkidle=%dms (%s), images=%dms",
+                scroll_ms, idle_ms, "reached" if idle_reached else "TIMED OUT", images_ms,
+            )
 
             # Post-load delay
             post_load = settings.screenshot_post_load_delay

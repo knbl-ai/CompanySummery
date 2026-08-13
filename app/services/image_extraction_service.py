@@ -366,12 +366,20 @@ async def prepare_and_extract(
     await dismiss_consent(page)
     await neutralize_animations(page)
 
+    # Timed per step: a crawl pays this whole sequence once per page, so an unspent
+    # bound here is multiplied by `crawl_max_pages`. Every wait is already capped; the
+    # question these numbers answer is which cap is actually being reached.
+    t_idle1 = time.monotonic()
+    idle1_reached = True
     try:
         await page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
+        idle1_reached = False
         logger.info("Network idle timeout, continuing...")
+    idle1_ms = int((time.monotonic() - t_idle1) * 1000)
 
     # Wait for page body to have meaningful content (SPA support)
+    t_body = time.monotonic()
     await page.evaluate("""async () => {
         const maxWait = 10000;
         const start = Date.now();
@@ -380,16 +388,31 @@ async def prepare_and_extract(
             await new Promise(r => setTimeout(r, 300));
         }
     }""")
+    body_ms = int((time.monotonic() - t_body) * 1000)
 
     # Auto-scroll to trigger lazy loaders
+    t_scroll = time.monotonic()
     await page.evaluate(AUTO_SCROLL_JS)
+    scroll_ms = int((time.monotonic() - t_scroll) * 1000)
 
+    t_idle2 = time.monotonic()
+    idle2_reached = True
     try:
         await page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
+        idle2_reached = False
         logger.info("Network idle timeout after scroll, continuing...")
+    idle2_ms = int((time.monotonic() - t_idle2) * 1000)
 
+    t_images = time.monotonic()
     await page.evaluate(WAIT_FOR_IMAGES_JS)
+    images_ms = int((time.monotonic() - t_images) * 1000)
+
+    logger.info(
+        "Settle: idle1=%dms (%s), body=%dms, scroll=%dms, idle2=%dms (%s), images=%dms",
+        idle1_ms, "reached" if idle1_reached else "TIMED OUT", body_ms, scroll_ms,
+        idle2_ms, "reached" if idle2_reached else "TIMED OUT", images_ms,
+    )
 
     # Post-load delay. Its own setting, not the screenshot's: everything above has already
     # run — two `networkidle` waits, the full auto-scroll, wait-for-images — so this is the
