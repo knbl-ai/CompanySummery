@@ -18,11 +18,41 @@ class Settings(BaseSettings):
     screenshot_operation_timeout: int = 300000
     screenshot_page_navigation_timeout: int = 60000
     screenshot_capture_timeout: int = 60000
+    # How long to let the `load` event arrive before giving up on it.
+    #
+    # It is a head start, not a gate: the readiness poll below is what actually decides
+    # whether the page can be photographed, and on the run this was cut for it reported
+    # `ready=True` seconds after this wait had expired. Some sites never fire `load` at all
+    # — a polling widget, a video, an animation loop keeps the connection open — and there
+    # the old 30s was spent in full, every time, to learn nothing. knbl360.com: 30.0s of a
+    # 126.1s capture.
+    screenshot_load_state_timeout: int = 10000
     screenshot_gcs_upload_timeout: int = 15000
 
     # Screenshot behavior
     screenshot_max_concurrent: int = 3
-    screenshot_post_load_delay: int = 5000
+    # What is left of the blind pre-capture sleep, now that `FONTS_READY_JS` answers the
+    # question it was really being asked (see `page_prep`). It runs after two `networkidle`
+    # waits, a full auto-scroll and a wait-for-images, so it is a last settle, not a load.
+    screenshot_post_load_delay: int = 1500
+    # Bound on the fonts wait — see `screenshot_post_load_delay`.
+    screenshot_fonts_ready_timeout: int = 3000
+
+    # Viewport heights a full-page capture may grow to.
+    #
+    # `fullPage` means "past the fold", not "however far this page happens to run".
+    # knbl360.com renders 11441px; capturing all of it cost 29.3s of a 126.1s call and
+    # produced an 891KB sliver so tall that the vision model reading brand colours off it
+    # downsamples the detail away before it starts. Three viewports is the hero, the first
+    # content band and its follow-on — what a person means by "a screenshot of the site".
+    screenshot_max_full_page_viewports: int = 3
+
+    # How far the pre-capture scroll walks. The scroll exists to trigger what the capture
+    # will SHOW, so it is bounded by the capture — plus a margin, because `PAGE_TEXT_JS`
+    # reads the whole body and that text is the caller's only first-party evidence on a
+    # site that defeats extraction. Image harvesting keeps the unbounded walk; it is
+    # collecting the whole page, not photographing the top of it.
+    screenshot_scroll_max_px: int = 6000
 
     # Rendered pages allowed at once across the whole process. A page is what holds the
     # memory, and it used to be the same count as a context — one page per context — so

@@ -8,6 +8,7 @@ from app.services.browser_pool import browser_pool
 from app.services.capture_quality import flatness_is_blank, measure_flatness
 from app.services.page_prep import (
     AUTO_SCROLL_JS,
+    FONTS_READY_JS,
     WAIT_FOR_IMAGES_JS,
     dismiss_consent,
     neutralize_animations,
@@ -118,6 +119,49 @@ WAIT_FOR_CONTENT_JS = """async () => {
 }"""
 
 
+async def _full_page_clip(page) -> dict | None:
+    """The region a full-page capture should actually photograph, or None for all of it.
+
+    A short page is captured whole, exactly as before — the bound only bites on the pages
+    that made it necessary. Returning a clip rather than dropping `full_page` matters:
+    `full_page` is what lets the capture reach past the fold at all, and the clip then says
+    how far past.
+
+    Never raises. A page that refuses to be measured is captured whole, which is the old
+    behaviour and is never wrong — only sometimes slow.
+    """
+    try:
+        geom = await page.evaluate(
+            """() => ({
+                scrollHeight: Math.max(
+                    document.body ? document.body.scrollHeight : 0,
+                    document.documentElement ? document.documentElement.scrollHeight : 0
+                ),
+                viewportHeight: window.innerHeight,
+                viewportWidth: window.innerWidth,
+            })"""
+        )
+    except Exception as e:
+        logger.debug("Page geometry probe failed, capturing full page: %s", e)
+        return None
+
+    viewport_height = int(geom.get("viewportHeight") or 0)
+    viewport_width = int(geom.get("viewportWidth") or 0)
+    scroll_height = int(geom.get("scrollHeight") or 0)
+    if viewport_height <= 0 or viewport_width <= 0 or scroll_height <= 0:
+        return None
+
+    cap = viewport_height * settings.screenshot_max_full_page_viewports
+    if scroll_height <= cap:
+        return None
+
+    logger.info(
+        "Capping capture at %dpx of %dpx (%d viewports)",
+        cap, scroll_height, settings.screenshot_max_full_page_viewports,
+    )
+    return {"x": 0, "y": 0, "width": viewport_width, "height": cap}
+
+
 async def capture_screenshot(
     url: str,
     full_page: bool = True,
@@ -144,16 +188,24 @@ async def capture_screenshot(
             logger.info("Navigation committed, waiting for load state...")
 
             # Wait for load state so JS bundles are fetched
+            load_timeout = settings.screenshot_load_state_timeout
             try:
-                await page.wait_for_load_state("load", timeout=30000)
+                await page.wait_for_load_state("load", timeout=load_timeout)
                 logger.info("Load state reached")
             except Exception:
-                logger.info("Load state timeout (30s), continuing...")
+                logger.info("Load state timeout (%dms), continuing...", load_timeout)
 
             # Clear consent overlays and force scroll-reveal content visible BEFORE
             # the readiness poll, so it measures the real page, not the banner.
+            #
+            # Timed because this pair is unmeasured and not cheap — 12.0s here and 7.0s
+            # for the second pass before capture, on a 126.1s knbl360.com call. Neither
+            # number was visible until it was printed, which is the same reason the
+            # settle steps below are timed individually.
+            t_prep = time.monotonic()
             await dismiss_consent(page)
             await neutralize_animations(page)
+            logger.info("Consent/animation pass 1: %dms", int((time.monotonic() - t_prep) * 1000))
 
             # Wait for real visible content (SPA-aware)
             logger.info("Waiting for visible content to render...")
@@ -182,9 +234,10 @@ async def capture_screenshot(
             # at 10s, three seconds per image after that). Which bound is actually being
             # spent is not something the totals can answer, and guessing wrong here
             # means trading away lazy-loaded images for nothing.
-            logger.info("Scrolling page...")
+            scroll_limit = settings.screenshot_scroll_max_px
+            logger.info("Scrolling page (max %dpx)...", scroll_limit)
             t_scroll = time.monotonic()
-            await page.evaluate(AUTO_SCROLL_JS)
+            await page.evaluate(AUTO_SCROLL_JS, scroll_limit)
             scroll_ms = int((time.monotonic() - t_scroll) * 1000)
 
             # Wait for network to settle after scrolling
@@ -206,7 +259,22 @@ async def capture_screenshot(
                 scroll_ms, idle_ms, "reached" if idle_reached else "TIMED OUT", images_ms,
             )
 
-            # Post-load delay
+            # Fonts, then a short settle. A font swapping in after the frame is taken is
+            # the thing the old fixed 5s sleep was really guarding against, and this asks
+            # the page directly instead of guessing how long it would take.
+            t_fonts = time.monotonic()
+            try:
+                fonts_state = await page.evaluate(
+                    FONTS_READY_JS, settings.screenshot_fonts_ready_timeout
+                )
+            except Exception as e:
+                logger.debug("Fonts-ready probe failed: %s", e)
+                fonts_state = "error"
+            logger.info(
+                "Fonts: %s (%dms)", fonts_state, int((time.monotonic() - t_fonts) * 1000)
+            )
+
+            # Post-load delay. `delay` is the caller's explicit ask and still wins outright.
             post_load = settings.screenshot_post_load_delay
             total_delay = max(delay, post_load)
             if total_delay > 0:
@@ -216,8 +284,10 @@ async def capture_screenshot(
 
             # Second consent pass right before capture: CMPs load asynchronously and
             # often appear seconds after `load`. Style tags injected twice are harmless.
+            t_prep2 = time.monotonic()
             await dismiss_consent(page)
             await neutralize_animations(page)
+            logger.info("Consent/animation pass 2: %dms", int((time.monotonic() - t_prep2) * 1000))
 
             # Capture
             capture_timeout_ms = settings.screenshot_capture_timeout
@@ -226,6 +296,10 @@ async def capture_screenshot(
                 "type": fmt,
                 "timeout": capture_timeout_ms,
             }
+            if full_page:
+                clip = await _full_page_clip(page)
+                if clip is not None:
+                    screenshot_opts["clip"] = clip
             if fmt in ("jpeg", "webp"):
                 screenshot_opts["quality"] = quality
 

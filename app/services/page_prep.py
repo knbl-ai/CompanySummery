@@ -117,11 +117,16 @@ REVEAL_NEUTRALIZE_CSS = """
 }
 """
 
-AUTO_SCROLL_JS = """async () => {
+# `maxHeight` is optional: callers that photograph a bounded region pass the region they
+# are going to show, callers that harvest the whole page (image extraction) pass nothing
+# and keep the original 15000px walk. The bound matters because a scroll step is not free
+# on an animated page — knbl360.com spent 21.1s walking 15000px for a capture that only
+# ever showed the first 3240 of them.
+AUTO_SCROLL_JS = """async (maxHeightArg) => {
     await new Promise((resolve) => {
         const viewportHeight = window.innerHeight;
         const distance = Math.floor(viewportHeight * 0.8);
-        const maxHeight = 15000;
+        const maxHeight = maxHeightArg || 15000;
         const scrollTimeout = 40000;
         const startTime = Date.now();
         let totalHeight = 0;
@@ -150,6 +155,24 @@ WAIT_FOR_IMAGES_JS = """async () => {
             setTimeout(resolve, 3000);
         });
     }));
+}"""
+
+
+# The deterministic form of "has the page stopped changing shape?".
+#
+# It replaces most of a blind fixed sleep. That sleep was justified by a font swap landing
+# after the capture — which is a real risk and exactly what `document.fonts.ready` answers,
+# rather than guessing a number that is too long on every ordinary page and too short on the
+# one page it was chosen for. Bounded, because a page with a font that never loads must not
+# hold the capture: the wait is worth having, not worth waiting forever for.
+FONTS_READY_JS = """async (timeoutMs) => {
+    if (!document.fonts || !document.fonts.ready) return 'unsupported';
+    let timedOut = false;
+    await Promise.race([
+        document.fonts.ready,
+        new Promise(r => setTimeout(() => { timedOut = true; r(); }, timeoutMs || 3000)),
+    ]);
+    return timedOut ? 'timeout' : 'ready';
 }"""
 
 

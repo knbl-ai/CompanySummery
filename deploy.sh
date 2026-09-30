@@ -28,7 +28,11 @@ SCREENSHOT_PAGE_NAVIGATION_TIMEOUT=$SCREENSHOT_PAGE_NAVIGATION_TIMEOUT,\
 SCREENSHOT_CAPTURE_TIMEOUT=$SCREENSHOT_CAPTURE_TIMEOUT,\
 SCREENSHOT_GCS_UPLOAD_TIMEOUT=$SCREENSHOT_GCS_UPLOAD_TIMEOUT,\
 SCREENSHOT_MAX_CONCURRENT=$SCREENSHOT_MAX_CONCURRENT,\
-SCREENSHOT_POST_LOAD_DELAY=$SCREENSHOT_POST_LOAD_DELAY,\
+SCREENSHOT_POST_LOAD_DELAY=${SCREENSHOT_POST_LOAD_DELAY:-1500},\
+SCREENSHOT_LOAD_STATE_TIMEOUT=${SCREENSHOT_LOAD_STATE_TIMEOUT:-10000},\
+SCREENSHOT_FONTS_READY_TIMEOUT=${SCREENSHOT_FONTS_READY_TIMEOUT:-3000},\
+SCREENSHOT_MAX_FULL_PAGE_VIEWPORTS=${SCREENSHOT_MAX_FULL_PAGE_VIEWPORTS:-3},\
+SCREENSHOT_SCROLL_MAX_PX=${SCREENSHOT_SCROLL_MAX_PX:-6000},\
 IMAGE_EXTRACTION_TIMEOUT=$IMAGE_EXTRACTION_TIMEOUT,\
 IMAGE_MIN_WIDTH=$IMAGE_MIN_WIDTH,\
 IMAGE_MIN_HEIGHT=$IMAGE_MIN_HEIGHT,\
@@ -56,6 +60,19 @@ CRAWL_PAGE_CONCURRENCY=${CRAWL_PAGE_CONCURRENCY:-6}"
 #
 # `CRAWL_PAGE_TIMEOUT_MS=45000` reverts the start-page budget on its own. It costs a crawl
 # nothing when the page loads; it only decides how long a slow one is given to prove it.
+#
+# The capture bounds land the same way. knbl360.com measured 126.1s server-side on
+# 2026-08-27 — 30.0s waiting for a `load` that never fires, 21.1s scrolling 15000px it
+# never photographed, 5.0s of blind sleep, and 29.3s capturing all 11441px of it. To put
+# the whole of that back on a running revision:
+#
+#   gcloud run services update company-analyzer --region us-central1 \
+#     --update-env-vars SCREENSHOT_LOAD_STATE_TIMEOUT=30000,SCREENSHOT_SCROLL_MAX_PX=15000,\
+#SCREENSHOT_MAX_FULL_PAGE_VIEWPORTS=100000,SCREENSHOT_POST_LOAD_DELAY=5000
+#
+# `SCREENSHOT_MAX_FULL_PAGE_VIEWPORTS` is the one to reach for first if a capture comes
+# back showing too little of a site: it is the only one of the four that changes what the
+# image CONTAINS rather than how long it is worth waiting for.
 
 echo "Starting deployment process..."
 
